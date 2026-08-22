@@ -3,15 +3,13 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
   Block-5 tests covering:
 
   1. Comments availability/posting smoke — resource_type "inventory".
-  2. Add-picker modal flow:
-     - modal opens on "open_add_picker"
-     - :one mode → add closes modal
-     - :many mode → add keeps modal open (item dimmed)
+  2. ItemSelectorModal wiring: "Add item" opens it, `handle_info` on confirm
+     appends lines seeded with the picked quantity (dedup by item_uuid), and
+     `:item_selector_closed` resets the show flag.
   3. count_sheet / stock_sheet header totals.
 
   Conventions:
   - ConnCase, async: false (shared DB)
-  - no Process.sleep
   """
 
   use PhoenixKitWarehouse.LiveCase, async: false
@@ -188,11 +186,11 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
   end
 
   # ---------------------------------------------------------------------------
-  # 2. Add-picker modal flow
+  # 2. ItemSelectorModal wiring
   # ---------------------------------------------------------------------------
 
-  describe "add-picker modal open / close" do
-    test "modal is initially hidden on the items tab", %{conn: conn} do
+  describe "\"Add item\" button" do
+    test "opens ItemSelectorModal", %{conn: conn} do
       admin = create_admin_user()
       conn = log_in(conn, admin)
       {:ok, doc} = Inventories.create_draft(%{lines: []})
@@ -200,53 +198,34 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
       html = render_patch(lv, items_path(doc.uuid))
 
-      # The modal element is present but not shown (show=false renders
-      # the modal with hidden/display:none or empty markup).
-      # "Add item" button is visible (draft document).
-      assert html =~ ~s(phx-click="open_add_picker")
-    end
+      refute html =~ "inventory-item-selector"
 
-    test "open_add_picker event makes the modal appear", %{conn: conn} do
-      admin = create_admin_user()
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
+      html = lv |> element("[phx-click='open_item_selector']") |> render_click()
 
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-
-      html =
-        lv
-        |> element("[phx-click='open_add_picker']")
-        |> render_click()
-
-      # Modal should now be visible — it contains the mode toggles
-      assert html =~ "close_add_picker" or html =~ dgettext_for_close() or html =~ "add_position"
-    end
-
-    test "close_add_picker event hides the modal", %{conn: conn} do
-      admin = create_admin_user()
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
-
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-
-      # Open the modal
-      render_hook(lv, "open_add_picker", %{})
-
-      # Close it
-      html = render_hook(lv, "close_add_picker", %{})
-
-      # After close, the show_add_picker_modal assign is false.
-      # The modal is hidden — the add_position buttons inside it are not visible.
-      # We verify by confirming that open_add_picker button is still present
-      # (the "Add item" button in the count-sheet header).
-      assert html =~ ~s(phx-click="open_add_picker")
+      assert html =~ "inventory-item-selector"
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == true
     end
   end
 
-  describe "add-picker modal: add mode :one" do
-    test ":one mode — adding item closes the modal", %{conn: conn} do
+  describe "handle_info({:item_selector_closed, ...})" do
+    test "closes the modal", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in(conn, admin)
+      {:ok, doc} = Inventories.create_draft(%{lines: []})
+
+      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
+      render_patch(lv, items_path(doc.uuid))
+
+      render_hook(lv, "open_item_selector", %{})
+      send(lv.pid, {:item_selector_closed, %{id: "inventory-item-selector"}})
+      :timer.sleep(50)
+
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == false
+    end
+  end
+
+  describe "handle_info({:items_selected, ...}) (ItemSelectorModal confirm)" do
+    test "adds a line seeded with the picked quantity, and closes the modal", %{conn: conn} do
       admin = create_admin_user()
       n = System.unique_integer([:positive])
       cat = create_catalogue!("ModalCat #{n}")
@@ -259,92 +238,22 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
       render_patch(lv, items_path(doc.uuid))
 
-      # Open modal
-      render_hook(lv, "open_add_picker", %{})
+      pick = %{uuid: item.uuid, qty: Decimal.new("5"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+      :timer.sleep(50)
 
-      # Ensure :one mode (default)
-      render_hook(lv, "set_add_mode", %{"mode" => "one"})
+      state = :sys.get_state(lv.pid)
+      assert state.socket.assigns.show_item_selector == false
+      [line] = state.socket.assigns.lines
+      assert line["item_uuid"] == item.uuid
+      assert Decimal.equal?(line["counted_quantity"], Decimal.new("5"))
 
-      # Trigger add_position (as if clicked from the picker)
-      html = render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-
-      # show_add_picker_modal should now be false:
-      # The "Done" close button inside the modal markup should not appear,
-      # or equivalently the open_add_picker button is still in the outer shell.
-      # In :one mode the modal is hidden after add — we verify no modal content visible.
-      # The simplest check: item name is now in the count sheet (line was added).
+      html = render(lv)
       assert html =~ item.name
-    end
-
-    test ":one mode — added item appears in count sheet lines", %{conn: conn} do
-      admin = create_admin_user()
-      n = System.unique_integer([:positive])
-      cat = create_catalogue!("OneCat #{n}")
-      item = create_active_item!(cat, "OneItem #{n}")
-
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
-
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-
-      render_hook(lv, "set_add_mode", %{"mode" => "one"})
-
-      html = render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-
-      assert html =~ item.name
-      # The item SKU is also shown in the count sheet
       assert html =~ item.sku
     end
-  end
 
-  describe "add-picker modal: add mode :many" do
-    test ":many mode — adding item keeps the modal open (show_add_picker_modal stays true)",
-         %{conn: conn} do
-      admin = create_admin_user()
-      n = System.unique_integer([:positive])
-      cat = create_catalogue!("ManyCat #{n}")
-      item = create_active_item!(cat, "ManyItem #{n}")
-
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
-
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-
-      # Switch to :many mode
-      render_hook(lv, "set_add_mode", %{"mode" => "many"})
-
-      # Open the modal, then add an item
-      render_hook(lv, "open_add_picker", %{})
-      html = render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-
-      # In :many mode the modal stays open: the "close_add_picker" action is
-      # still present in the rendered output (as it's shown in the modal actions).
-      assert html =~ "close_add_picker"
-    end
-
-    test ":many mode — added item name appears in rendered HTML", %{conn: conn} do
-      admin = create_admin_user()
-      n = System.unique_integer([:positive])
-      cat = create_catalogue!("ManyAdd #{n}")
-      item = create_active_item!(cat, "ManyAddItem #{n}")
-
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
-
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-
-      render_hook(lv, "set_add_mode", %{"mode" => "many"})
-      render_hook(lv, "open_add_picker", %{})
-
-      html = render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-
-      assert html =~ item.name
-    end
-
-    test ":many mode — adding a second item appends both to lines", %{conn: conn} do
+    test "several picks in one confirm append all of them", %{conn: conn} do
       admin = create_admin_user()
       n = System.unique_integer([:positive])
       cat = create_catalogue!("ManyTwo #{n}")
@@ -357,17 +266,20 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
       render_patch(lv, items_path(doc.uuid))
 
-      render_hook(lv, "set_add_mode", %{"mode" => "many"})
-      render_hook(lv, "open_add_picker", %{})
+      picks = [
+        %{uuid: item_a.uuid, qty: Decimal.new("1"), unit: item_a.unit, name: item_a.name},
+        %{uuid: item_b.uuid, qty: Decimal.new("2"), unit: item_b.unit, name: item_b.name}
+      ]
 
-      render_hook(lv, "add_position", %{"item_uuid" => item_a.uuid})
-      html = render_hook(lv, "add_position", %{"item_uuid" => item_b.uuid})
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: picks}})
+      :timer.sleep(50)
 
+      html = render(lv)
       assert html =~ item_a.name
       assert html =~ item_b.name
     end
 
-    test ":many mode — re-adding an already-present item does not duplicate it", %{conn: conn} do
+    test "re-adding an already-present item does not duplicate it", %{conn: conn} do
       admin = create_admin_user()
       n = System.unique_integer([:positive])
       cat = create_catalogue!("ManyDedup #{n}")
@@ -379,26 +291,13 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
       render_patch(lv, items_path(doc.uuid))
 
-      render_hook(lv, "set_add_mode", %{"mode" => "many"})
-      render_hook(lv, "open_add_picker", %{})
+      pick = %{uuid: item.uuid, qty: Decimal.new("1"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+      :timer.sleep(50)
 
-      # Add the item twice
-      render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-      render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
-
-      # Item appears in the lines table exactly once (one tbody row, not two).
-      # We scope to "table tbody tr" inside the collapse-content area to avoid
-      # counting occurrences in the open modal's add_picker.
-      row_count =
-        lv
-        |> element(".collapse-content table tbody")
-        |> render()
-        |> String.split(item.name)
-        |> length()
-        |> Kernel.-(1)
-
-      assert row_count == 1,
-             "Expected item to appear exactly once in the lines table but found #{row_count} occurrences"
+      assert length(:sys.get_state(lv.pid).socket.assigns.lines) == 1
     end
   end
 
@@ -547,67 +446,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
   end
 
   # ---------------------------------------------------------------------------
-  # 6. Add-picker search modes — list vs tree
-  # ---------------------------------------------------------------------------
-
-  describe "add-picker search modes (list vs tree)" do
-    setup %{conn: conn} do
-      admin = create_admin_user()
-      n = System.unique_integer([:positive])
-      cat = create_catalogue!("ModeCat #{n}")
-      item = create_active_item!(cat, "ModeItem #{n}")
-
-      conn = log_in(conn, admin)
-      {:ok, doc} = Inventories.create_draft(%{lines: []})
-
-      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
-      render_patch(lv, items_path(doc.uuid))
-      html = render_hook(lv, "open_add_picker", %{})
-
-      %{lv: lv, cat: cat, item: item, opened_html: html}
-    end
-
-    test "list mode (default) with no query does NOT render the catalogue tree",
-         %{opened_html: html} do
-      # In list mode the tree (toggle_catalogue headers) must be hidden so the
-      # view is purely search-driven.
-      refute html =~ ~s(phx-click="toggle_catalogue")
-    end
-
-    test "tree mode with no query renders the catalogue tree", %{lv: lv} do
-      html = render_hook(lv, "set_search_mode", %{"mode" => "tree"})
-      assert html =~ ~s(phx-click="toggle_catalogue")
-    end
-
-    test "list mode with a query shows flat results with an Add button, no tree",
-         %{lv: lv, item: item} do
-      render_hook(lv, "set_search_mode", %{"mode" => "list"})
-
-      html =
-        lv
-        |> element("form[phx-change='picker_search']")
-        |> render_change(%{"query" => item.sku})
-
-      assert html =~ item.name
-      assert html =~ ~s(phx-value-item_uuid="#{item.uuid}")
-      refute html =~ ~s(phx-click="toggle_catalogue")
-    end
-
-    test "tree mode with a query keeps the (filtered) catalogue tree",
-         %{lv: lv, item: item} do
-      render_hook(lv, "set_search_mode", %{"mode" => "tree"})
-
-      html =
-        lv
-        |> element("form[phx-change='picker_search']")
-        |> render_change(%{"query" => item.sku})
-
-      assert html =~ ~s(phx-click="toggle_catalogue")
-    end
-  end
-
-  # ---------------------------------------------------------------------------
-  # 7. Count input Enter-commit — pressing Enter must not reload/lose data
+  # 6. Count input Enter-commit — pressing Enter must not reload/lose data
   # ---------------------------------------------------------------------------
 
   describe "count sheet Enter-commit (no reload)" do
@@ -623,7 +462,10 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
 
       {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
       render_patch(lv, items_path(doc.uuid))
-      render_hook(lv, "add_position", %{"item_uuid" => item.uuid})
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("0"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+      :timer.sleep(50)
 
       # Pressing Enter triggers a form submit. With phx-submit wired, LiveView
       # commits the value instead of doing an external form submit (page reload
@@ -637,15 +479,5 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       assert html =~ item.name
       assert html =~ "42"
     end
-  end
-
-  # ---------------------------------------------------------------------------
-  # Helpers for test readability
-  # ---------------------------------------------------------------------------
-
-  # Returns the translated "Done" button text used in the modal actions.
-  # Avoids hardcoding the translation in tests.
-  defp dgettext_for_close do
-    Gettext.dgettext(PhoenixKitWarehouse.Gettext, "default", "Done")
   end
 end

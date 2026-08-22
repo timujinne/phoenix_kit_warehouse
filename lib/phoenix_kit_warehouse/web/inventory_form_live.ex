@@ -39,6 +39,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Utils.Routes
   alias PhoenixKitCatalogue.Catalogue
+  alias PhoenixKitCatalogue.Web.Components.ItemSelectorModal
 
   # ---------------------------------------------------------------------------
   # Lifecycle
@@ -61,7 +62,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
       |> assign(:admin?, admin?)
       |> assign(:warehouses, StockLedger.list_warehouses())
       |> assign(:stock_map, %{})
-      |> assign(:show_add_picker_modal, false)
+      |> assign(:show_item_selector, false)
       |> assign(:show_location_confirm, false)
       |> assign(:pending_location_uuid, nil)
       |> assign(:pending_location_name, nil)
@@ -80,16 +81,6 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
       |> assign(:selectable_users, [])
       |> assign(:location_name, nil)
       |> assign(:page_title, dgettext("default", "Stocktake"))
-      # Add-picker tree state
-      |> assign(:catalogue_summaries, [])
-      |> assign(:expanded_catalogues, MapSet.new())
-      |> assign(:expanded_categories, MapSet.new())
-      |> assign(:loaded_categories, %{})
-      |> assign(:loaded_items, %{})
-      |> assign(:item_search_query, "")
-      |> assign(:item_search_results, nil)
-      |> assign(:add_mode, :one)
-      |> assign(:search_mode, :list)
       |> MediaBrowser.setup_uploads()
 
     {:ok, socket}
@@ -101,13 +92,8 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
     action = socket.assigns.live_action
 
     socket =
-      if socket.assigns.catalogue_summaries == [] do
-        catalogue_summaries =
-          load_catalogue_summaries(Catalogue.list_catalogues(status: "active"))
-
-        socket
-        |> assign(:stock_map, StockLedger.stock_map())
-        |> assign(:catalogue_summaries, catalogue_summaries)
+      if socket.assigns.stock_map == %{} do
+        assign(socket, :stock_map, StockLedger.stock_map())
       else
         socket
       end
@@ -312,7 +298,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   end
 
   # ---------------------------------------------------------------------------
-  # Add picker modal handlers
+  # MediaBrowser validate absorber
   # ---------------------------------------------------------------------------
 
   # MediaBrowser allows the `:media_files` upload on this parent LiveView
@@ -321,114 +307,13 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   @impl true
   def handle_event("validate", _params, socket), do: {:noreply, socket}
 
-  def handle_event("open_add_picker", _params, socket) do
-    socket =
-      socket
-      |> assign(:show_add_picker_modal, true)
-      |> assign(:item_search_query, "")
-      |> assign(:item_search_results, nil)
-
-    {:noreply, socket}
-  end
+  # ---------------------------------------------------------------------------
+  # Item selector modal handlers
+  # ---------------------------------------------------------------------------
 
   @impl true
-  def handle_event("close_add_picker", _params, socket) do
-    {:noreply, assign(socket, :show_add_picker_modal, false)}
-  end
-
-  @impl true
-  def handle_event("set_add_mode", %{"mode" => mode}, socket) do
-    add_mode = if mode == "many", do: :many, else: :one
-    {:noreply, assign(socket, :add_mode, add_mode)}
-  end
-
-  @impl true
-  def handle_event("set_search_mode", %{"mode" => mode}, socket) do
-    search_mode = if mode == "tree", do: :tree, else: :list
-    {:noreply, assign(socket, :search_mode, search_mode)}
-  end
-
-  @impl true
-  def handle_event("toggle_catalogue", %{"uuid" => uuid}, socket) do
-    socket = ensure_catalogue_categories_loaded(socket, uuid)
-
-    expanded =
-      if MapSet.member?(socket.assigns.expanded_catalogues, uuid) do
-        MapSet.delete(socket.assigns.expanded_catalogues, uuid)
-      else
-        MapSet.put(socket.assigns.expanded_catalogues, uuid)
-      end
-
-    {:noreply, assign(socket, :expanded_catalogues, expanded)}
-  end
-
-  @impl true
-  def handle_event("toggle_category", %{"catalogue_uuid" => cat_uuid, "key" => key}, socket) do
-    socket = ensure_category_items_loaded(socket, cat_uuid, key)
-
-    tuple = {cat_uuid, key}
-
-    expanded =
-      if MapSet.member?(socket.assigns.expanded_categories, tuple) do
-        MapSet.delete(socket.assigns.expanded_categories, tuple)
-      else
-        MapSet.put(socket.assigns.expanded_categories, tuple)
-      end
-
-    {:noreply, assign(socket, :expanded_categories, expanded)}
-  end
-
-  @impl true
-  def handle_event("picker_search", %{"query" => query}, socket) when byte_size(query) < 2 do
-    {:noreply,
-     socket
-     |> assign(:item_search_query, query)
-     |> assign(:item_search_results, nil)}
-  end
-
-  def handle_event("picker_search", %{"query" => query}, socket) do
-    results = Catalogue.search_items(query, limit: 50)
-
-    {:noreply,
-     socket
-     |> assign(:item_search_query, query)
-     |> assign(:item_search_results, results)}
-  end
-
-  @impl true
-  def handle_event("picker_search_clear", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:item_search_query, "")
-     |> assign(:item_search_results, nil)}
-  end
-
-  # Per-item add from the picker tree or search results.
-  @impl true
-  def handle_event("add_position", %{"item_uuid" => item_uuid}, socket) do
-    posted? = socket.assigns.doc && socket.assigns.doc.status == "posted"
-    editable? = !posted? || socket.assigns.admin?
-
-    socket =
-      if editable? do
-        socket = add_item_to_lines(socket, item_uuid)
-
-        case socket.assigns.add_mode do
-          :one ->
-            index = Enum.find_index(socket.assigns.lines, &(&1["item_uuid"] == item_uuid))
-
-            socket
-            |> assign(:show_add_picker_modal, false)
-            |> focus_counted_input(index)
-
-          :many ->
-            socket
-        end
-      else
-        socket
-      end
-
-    {:noreply, socket}
+  def handle_event("open_item_selector", _params, socket) do
+    {:noreply, assign(socket, :show_item_selector, true)}
   end
 
   # ---------------------------------------------------------------------------
@@ -818,6 +703,30 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
     MediaBrowser.handle_parent_info(msg, socket)
   end
 
+  # ItemSelectorModal contract (PhoenixKitCatalogue.Web.Components.ItemSelectorModal):
+  # fired on Confirm with the batch of picks (uuid + Decimal qty); each pick
+  # becomes a new count-sheet line seeded with the picked quantity as
+  # counted_quantity — re-adding an already-present item is a no-op.
+  # `posted?`/`editable?` aren't socket assigns (computed in render/1), so
+  # they're re-derived here, same as add_position did.
+  def handle_info({:items_selected, %{picks: picks}}, socket) do
+    posted? = socket.assigns.doc && socket.assigns.doc.status == "posted"
+    editable? = !posted? || socket.assigns.admin?
+
+    socket =
+      if editable? do
+        add_picks_to_lines(socket, picks)
+      else
+        socket
+      end
+
+    {:noreply, assign(socket, :show_item_selector, false)}
+  end
+
+  def handle_info({:item_selector_closed, %{id: _}}, socket) do
+    {:noreply, assign(socket, :show_item_selector, false)}
+  end
+
   # Catch-all: silently drop any unmatched process message (e.g. stale PubSub
   # broadcasts, unexpected CommentsComponent payloads after a library upgrade).
   # Prevents a FunctionClauseError from crashing the LiveView.
@@ -1100,7 +1009,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
               </h2>
               <%!-- Add item button (draft or admin on posted) — in the header row --%>
               <%= if @editable? do %>
-                <button type="button" phx-click="open_add_picker" class="btn btn-primary btn-sm">
+                <button type="button" phx-click="open_item_selector" class="btn btn-primary btn-sm">
                   <.icon name="hero-plus" class="w-4 h-4" />
                   {dgettext("default", "Add item")}
                 </button>
@@ -1117,101 +1026,13 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
           </div>
         </div>
 
-        <%!-- Add item modal --%>
-        <.modal
-          show={@show_add_picker_modal}
-          on_close="close_add_picker"
-          max_width="3xl"
-          max_height="80vh"
-        >
-          <:title>{dgettext("default", "Add item")}</:title>
-          <%!-- Mode toggles row --%>
-          <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-            <%!-- Add mode: one / many --%>
-            <div class="flex items-center gap-1">
-              <span class="text-xs text-base-content/60 mr-1">
-                {dgettext("default", "After add:")}
-              </span>
-              <div class="join">
-                <button
-                  type="button"
-                  phx-click="set_add_mode"
-                  phx-value-mode="one"
-                  class={[
-                    "btn btn-xs join-item",
-                    @add_mode == :one && "btn-primary",
-                    @add_mode != :one && "btn-ghost"
-                  ]}
-                >
-                  {dgettext("default", "Close")}
-                </button>
-                <button
-                  type="button"
-                  phx-click="set_add_mode"
-                  phx-value-mode="many"
-                  class={[
-                    "btn btn-xs join-item",
-                    @add_mode == :many && "btn-primary",
-                    @add_mode != :many && "btn-ghost"
-                  ]}
-                >
-                  {dgettext("default", "Keep open")}
-                </button>
-              </div>
-            </div>
-            <%!-- Search mode: list / tree --%>
-            <div class="flex items-center gap-1">
-              <span class="text-xs text-base-content/60 mr-1">
-                {dgettext("default", "View:")}
-              </span>
-              <div class="join">
-                <button
-                  type="button"
-                  phx-click="set_search_mode"
-                  phx-value-mode="list"
-                  class={[
-                    "btn btn-xs join-item",
-                    @search_mode == :list && "btn-primary",
-                    @search_mode != :list && "btn-ghost"
-                  ]}
-                >
-                  {dgettext("default", "List")}
-                </button>
-                <button
-                  type="button"
-                  phx-click="set_search_mode"
-                  phx-value-mode="tree"
-                  class={[
-                    "btn btn-xs join-item",
-                    @search_mode == :tree && "btn-primary",
-                    @search_mode != :tree && "btn-ghost"
-                  ]}
-                >
-                  {dgettext("default", "Tree")}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="min-h-[28rem]">
-            <WarehouseBrowser.add_picker
-              catalogue_summaries={@catalogue_summaries}
-              expanded_catalogues={@expanded_catalogues}
-              expanded_categories={@expanded_categories}
-              loaded_categories={@loaded_categories}
-              loaded_items={@loaded_items}
-              locale={@locale}
-              present_item_uuids={present_uuids(@lines)}
-              item_search_query={@item_search_query}
-              item_search_results={@item_search_results}
-              search_mode={@search_mode}
-            />
-          </div>
-          <:actions>
-            <button type="button" phx-click="close_add_picker" class="btn btn-sm">
-              {dgettext("default", "Done")}
-            </button>
-          </:actions>
-        </.modal>
+        <.live_component
+          :if={@show_item_selector}
+          module={ItemSelectorModal}
+          id="inventory-item-selector"
+          scope={%{}}
+          selected={selected_items(@lines)}
+        />
       <% end %>
 
       <%!-- Tab: Files --%>
@@ -1291,64 +1112,17 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  # Builds the catalogue_summaries list: [{catalogue: catalogue}] for each
-  # active catalogue. Used to populate the add_picker tree.
-  defp load_catalogue_summaries(catalogues) do
-    Enum.map(catalogues, fn catalogue -> %{catalogue: catalogue} end)
+  # ItemSelectorModal confirm: one pick per selected item (uuid + Decimal
+  # qty). Each lands as a new count-sheet line, seeded with the picked
+  # quantity as counted_quantity; re-adding an already-present item is a
+  # no-op (dedup by item_uuid), same as the add_picker it replaces.
+  defp add_picks_to_lines(socket, picks) do
+    Enum.reduce(picks, socket, fn pick, socket ->
+      add_item_to_lines(socket, pick.uuid, pick.qty)
+    end)
   end
 
-  # Lazily loads and caches category metadata for a catalogue when first expanded.
-  defp ensure_catalogue_categories_loaded(socket, catalogue_uuid) do
-    if Map.has_key?(socket.assigns.loaded_categories, catalogue_uuid) do
-      socket
-    else
-      summary = Catalogue.category_summary_for_catalogue(catalogue_uuid)
-
-      # Build the category list: real categories + a nil entry if uncategorized items exist
-      categories =
-        summary.categories
-        |> Enum.map(fn cat -> %{category: cat} end)
-        |> then(fn cats ->
-          if summary.uncategorized_count > 0 do
-            cats ++ [%{category: nil}]
-          else
-            cats
-          end
-        end)
-
-      loaded = Map.put(socket.assigns.loaded_categories, catalogue_uuid, categories)
-      assign(socket, :loaded_categories, loaded)
-    end
-  end
-
-  # Lazily loads and caches items for a category (or uncategorized) when first expanded.
-  defp ensure_category_items_loaded(socket, catalogue_uuid, cat_key) do
-    tuple = {catalogue_uuid, cat_key}
-
-    if Map.has_key?(socket.assigns.loaded_items, tuple) do
-      socket
-    else
-      items =
-        if cat_key == "uncategorized" do
-          Catalogue.list_uncategorized_items(catalogue_uuid)
-        else
-          Catalogue.list_items_for_category(cat_key)
-        end
-
-      loaded = Map.put(socket.assigns.loaded_items, tuple, items)
-      assign(socket, :loaded_items, loaded)
-    end
-  end
-
-  # Focuses the "Counted" input of the row at `index` (client-side, after the
-  # modal closes) via a window event handled in app.js.
-  defp focus_counted_input(socket, nil), do: socket
-
-  defp focus_counted_input(socket, index) do
-    push_event(socket, "inv-focus-counted", %{id: "counted-input-#{index}"})
-  end
-
-  defp add_item_to_lines(socket, item_uuid) do
+  defp add_item_to_lines(socket, item_uuid, qty) do
     lines = socket.assigns.lines
     locale = socket.assigns.locale
 
@@ -1372,7 +1146,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
           "category_uuid" => item.category_uuid,
           "catalogue_uuid" => item.catalogue_uuid,
           "unit" => item.unit,
-          "counted_quantity" => Decimal.new("0"),
+          "counted_quantity" => qty,
           "unit_value" => unit_value
         }
 
@@ -1486,11 +1260,18 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
     end
   end
 
-  defp present_uuids(lines) do
-    lines
-    |> Enum.map(& &1["item_uuid"])
-    |> Enum.filter(& &1)
-    |> MapSet.new()
+  # ItemSelectorModal's `selected` attr: %{uuid => qty} for every line already
+  # on the count sheet, so an already-added item shows in the modal's tray
+  # instead of being re-added as a duplicate.
+  defp selected_items(lines) do
+    Enum.reduce(lines, %{}, fn
+      %{"item_uuid" => uuid, "counted_quantity" => %Decimal{} = qty}, acc
+      when is_binary(uuid) ->
+        Map.put(acc, uuid, qty)
+
+      _, acc ->
+        acc
+    end)
   end
 
   defp clamp_non_negative(%Decimal{} = d) do

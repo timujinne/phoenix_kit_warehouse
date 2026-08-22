@@ -7,6 +7,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLiveTest do
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Users.Roles
   alias PhoenixKit.Utils.Routes
+  alias PhoenixKitCatalogue.Catalogue
   alias PhoenixKitWarehouse.GoodsIssues
   alias PhoenixKitWarehouse.InternalOrder
   alias PhoenixKitWarehouse.InternalOrders
@@ -67,6 +68,21 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLiveTest do
       })
 
     order
+  end
+
+  defp create_catalogue_item! do
+    {:ok, catalogue} =
+      Catalogue.create_catalogue(%{name: "IO Form Test #{System.unique_integer([:positive])}"})
+
+    {:ok, item} =
+      Catalogue.create_item(%{
+        name: "IO Test Item #{System.unique_integer([:positive])}",
+        catalogue_uuid: catalogue.uuid,
+        base_price: "10.00",
+        status: "active"
+      })
+
+    item
   end
 
   # ---------------------------------------------------------------------------
@@ -369,6 +385,96 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLiveTest do
       assert html =~ "Select all"
       refute has_element?(lv, "input[phx-value-uuid='#{order1.uuid}'][checked]")
       refute has_element?(lv, "input[phx-value-uuid='#{order2.uuid}'][checked]")
+    end
+  end
+
+  describe "\"Add item\" button" do
+    test "opens ItemSelectorModal", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      order = create_draft()
+
+      {:ok, lv, html} = live(conn, items_path(order.uuid))
+
+      refute html =~ "internal-order-item-selector"
+
+      html = lv |> element("button[phx-click='open_item_selector']") |> render_click()
+
+      assert html =~ "internal-order-item-selector"
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == true
+    end
+  end
+
+  describe "handle_info({:items_selected, ...}) (ItemSelectorModal confirm)" do
+    test "adds a line seeded with the picked quantity", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      order = create_draft()
+      item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(order.uuid))
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("4"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "internal-order-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      assert state.socket.assigns.show_item_selector == false
+      [line] = state.socket.assigns.lines
+      assert line["item_uuid"] == item.uuid
+      assert line["required_quantity"] == "4"
+    end
+
+    test "re-adding an already-present item does not duplicate it", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      order = create_draft()
+      item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(order.uuid))
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("2"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "internal-order-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+      send(lv.pid, {:items_selected, %{id: "internal-order-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      assert length(state.socket.assigns.lines) == 1
+    end
+
+    test "does nothing once the order is posted", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      order = create_draft()
+      {:ok, posted} = InternalOrders.post_internal_order(order, admin.uuid)
+      item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(posted.uuid))
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("2"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "internal-order-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      assert state.socket.assigns.lines == []
+    end
+  end
+
+  describe "handle_info({:item_selector_closed, ...})" do
+    test "closes the modal", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      order = create_draft()
+
+      {:ok, lv, _html} = live(conn, items_path(order.uuid))
+
+      :sys.replace_state(lv.pid, fn s -> put_in(s.socket.assigns[:show_item_selector], true) end)
+
+      send(lv.pid, {:item_selector_closed, %{id: "internal-order-item-selector"}})
+      :timer.sleep(50)
+
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == false
     end
   end
 end
