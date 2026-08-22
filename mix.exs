@@ -1,7 +1,7 @@
 defmodule PhoenixKitWarehouse.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.4.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_warehouse"
 
   def project do
@@ -109,7 +109,10 @@ defmodule PhoenixKitWarehouse.MixProject do
       # Sibling PhoenixKit modules the warehouse UI/contexts build on:
       # comments embeds, catalogue products, locations, and billing currency.
       pk_dep(:phoenix_kit_billing, "~> 0.7"),
-      pk_dep(:phoenix_kit_catalogue, "~> 0.13"),
+      # 0.18.0 is the floor: `ItemSelectorModal` (the three "Add item" flows)
+      # first shipped there. `~> 0.13` would still resolve 0.13–0.17, which
+      # compile-fail on `PhoenixKitCatalogue.Web.Components.ItemSelectorModal`.
+      pk_dep(:phoenix_kit_catalogue, "~> 0.18"),
       # 0.2.8 is the floor for the same reason `phoenix_kit` has one: six form
       # LiveViews `use PhoenixKitComments.Embed` (first shipped in 0.2.6, and a
       # `use` cannot be guarded), and `PhoenixKitWarehouse.Comments` calls

@@ -39,6 +39,11 @@ defmodule PhoenixKitWarehouseTest do
       assert tab.live_view == {PhoenixKitWarehouse.Web.TransferIndexLive, :index}
     end
 
+    test "admin_tabs/0 never leaves visible unset (nil means auto in Tab.visible?/2)" do
+      tabs = PhoenixKitWarehouse.admin_tabs()
+      assert Enum.all?(tabs, &(not is_nil(&1.visible)))
+    end
+
     test "admin_tabs/0 includes the hidden Transfer CRUD tabs" do
       tabs = PhoenixKitWarehouse.admin_tabs()
 

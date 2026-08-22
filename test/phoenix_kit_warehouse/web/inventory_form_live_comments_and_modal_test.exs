@@ -205,6 +205,37 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       assert html =~ "inventory-item-selector"
       assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == true
     end
+
+    test "preselects lines whose counted_quantity was stored as a JSONB string", %{conn: conn} do
+      admin = create_admin_user()
+      n = System.unique_integer([:positive])
+      cat = create_catalogue!("PreselectCat #{n}")
+      item = create_active_item!(cat, "PreselectItem #{n}")
+      conn = log_in(conn, admin)
+
+      {:ok, doc} =
+        Inventories.create_draft(%{
+          lines: [
+            %{
+              "item_uuid" => item.uuid,
+              "name" => item.name,
+              "sku" => item.sku,
+              "category_uuid" => item.category_uuid,
+              "catalogue_uuid" => item.catalogue_uuid,
+              "unit" => item.unit,
+              "counted_quantity" => "5",
+              "unit_value" => nil
+            }
+          ]
+        })
+
+      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
+      render_patch(lv, items_path(doc.uuid))
+      html = lv |> element("[phx-click='open_item_selector']") |> render_click()
+
+      assert html =~ "inventory-item-selector"
+      assert html =~ "1 item"
+    end
   end
 
   describe "handle_info({:item_selector_closed, ...})" do
@@ -218,7 +249,6 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
 
       render_hook(lv, "open_item_selector", %{})
       send(lv.pid, {:item_selector_closed, %{id: "inventory-item-selector"}})
-      :timer.sleep(50)
 
       assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == false
     end
@@ -240,7 +270,6 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("5"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       state = :sys.get_state(lv.pid)
       assert state.socket.assigns.show_item_selector == false
@@ -272,7 +301,6 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
       ]
 
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: picks}})
-      :timer.sleep(50)
 
       html = render(lv)
       assert html =~ item_a.name
@@ -293,11 +321,30 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("1"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
-      :timer.sleep(50)
+      :sys.get_state(lv.pid)
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       assert length(:sys.get_state(lv.pid).socket.assigns.lines) == 1
+    end
+
+    test "a missing catalogue item is skipped instead of crashing the LiveView", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in(conn, admin)
+      {:ok, doc} = Inventories.create_draft(%{lines: []})
+
+      {:ok, lv, _html} = live(conn, edit_path(doc.uuid))
+      render_patch(lv, items_path(doc.uuid))
+
+      pick = %{
+        uuid: Ecto.UUID.generate(),
+        qty: Decimal.new("1"),
+        unit: "pcs",
+        name: "gone"
+      }
+
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+
+      assert :sys.get_state(lv.pid).socket.assigns.lines == []
     end
   end
 
@@ -465,7 +512,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveCommentsAndModalTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("0"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
-      :timer.sleep(50)
+      :sys.get_state(lv.pid)
 
       # Pressing Enter triggers a form submit. With phx-submit wired, LiveView
       # commits the value instead of doing an external form submit (page reload

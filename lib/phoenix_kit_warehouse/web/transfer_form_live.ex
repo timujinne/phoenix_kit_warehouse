@@ -226,7 +226,13 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLive do
 
   @impl true
   def handle_event("open_item_selector", _params, socket) do
-    {:noreply, assign(socket, :show_item_selector, true)}
+    editable? = socket.assigns.transfer && socket.assigns.transfer.status == "draft"
+
+    if editable? do
+      {:noreply, assign(socket, :show_item_selector, true)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -1005,8 +1011,10 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLive do
           :if={@show_item_selector}
           module={ItemSelectorModal}
           id="transfer-item-selector"
-          scope={%{}}
+          scope={%{statuses: ["active"]}}
           selected={selected_items(@lines)}
+          locale={@locale}
+          qty_precision={6}
         />
       <% end %>
 
@@ -1233,19 +1241,23 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLive do
       if already_present? do
         lines
       else
-        item = Catalogue.get_item!(item_uuid)
+        case Catalogue.get_item(item_uuid) do
+          nil ->
+            lines
 
-        new_line = %{
-          "item_uuid" => item_uuid,
-          "name" => WarehouseBrowser.localized_name(item, locale),
-          "sku" => item.sku,
-          "catalogue_uuid" => item.catalogue_uuid,
-          "category_uuid" => item.category_uuid,
-          "unit" => item.unit,
-          "transfer_quantity" => Decimal.to_string(qty)
-        }
+          item ->
+            new_line = %{
+              "item_uuid" => item_uuid,
+              "name" => WarehouseBrowser.localized_name(item, locale),
+              "sku" => item.sku,
+              "catalogue_uuid" => item.catalogue_uuid,
+              "category_uuid" => item.category_uuid,
+              "unit" => item.unit,
+              "transfer_quantity" => qty |> StockLedger.to_decimal() |> Decimal.to_string(:normal)
+            }
 
-        lines ++ [new_line]
+            lines ++ [new_line]
+        end
       end
 
     names = build_names_map(lines, locale)
@@ -1281,11 +1293,8 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLive do
   # instead of being re-added as a duplicate.
   defp selected_items(lines) do
     Enum.reduce(lines, %{}, fn
-      %{"item_uuid" => uuid, "transfer_quantity" => qty}, acc when is_binary(uuid) ->
-        case Decimal.parse(qty || "0") do
-          {decimal, _} -> Map.put(acc, uuid, decimal)
-          :error -> acc
-        end
+      %{"item_uuid" => uuid} = line, acc when is_binary(uuid) ->
+        Map.put(acc, uuid, StockLedger.to_decimal(line["transfer_quantity"]))
 
       _, acc ->
         acc

@@ -125,6 +125,16 @@ defmodule PhoenixKitWarehouse.Web.SupplierOrderFormLiveTest do
 
       assert html =~ "#SO-#{order.number}"
     end
+
+    test "resolves the catalogue supplier name onto the form", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      {order, supplier} = create_draft()
+
+      {:ok, _lv, html} = live(conn, edit_path(order.uuid))
+
+      assert html =~ supplier.name
+    end
   end
 
   # ---------------------------------------------------------------------------

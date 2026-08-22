@@ -5,7 +5,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   Handles:
   - `:new`      — creates a draft and push_navigate to :edit path.
   - `:edit`     — loads an existing document; :general tab.
-  - `:items`    — count sheet + add picker (draft only).
+  - `:items`    — count sheet + catalogue ItemSelectorModal (draft only).
   - `:files`    — MediaBrowser; storage folder resolved asynchronously.
   - `:comments` — inventory comments thread.
 
@@ -313,7 +313,14 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
 
   @impl true
   def handle_event("open_item_selector", _params, socket) do
-    {:noreply, assign(socket, :show_item_selector, true)}
+    posted? = socket.assigns.doc && socket.assigns.doc.status == "posted"
+    editable? = !posted? || socket.assigns.admin?
+
+    if editable? do
+      {:noreply, assign(socket, :show_item_selector, true)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -1030,8 +1037,10 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
           :if={@show_item_selector}
           module={ItemSelectorModal}
           id="inventory-item-selector"
-          scope={%{}}
+          scope={%{statuses: ["active"]}}
           selected={selected_items(@lines)}
+          locale={@locale}
+          qty_precision={6}
         />
       <% end %>
 
@@ -1132,25 +1141,30 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
       if already_present? do
         lines
       else
-        item = Catalogue.get_item!(item_uuid)
-        stock_entry = Map.get(socket.assigns.stock_map, item_uuid)
+        case Catalogue.get_item(item_uuid) do
+          nil ->
+            lines
 
-        unit_value =
-          (stock_entry && stock_entry.unit_value) ||
-            StockLedger.to_decimal_or_nil(item.base_price)
+          item ->
+            stock_entry = Map.get(socket.assigns.stock_map, item_uuid)
 
-        new_line = %{
-          "item_uuid" => item_uuid,
-          "name" => WarehouseBrowser.localized_name(item, locale),
-          "sku" => item.sku,
-          "category_uuid" => item.category_uuid,
-          "catalogue_uuid" => item.catalogue_uuid,
-          "unit" => item.unit,
-          "counted_quantity" => qty,
-          "unit_value" => unit_value
-        }
+            unit_value =
+              (stock_entry && stock_entry.unit_value) ||
+                StockLedger.to_decimal_or_nil(item.base_price)
 
-        lines ++ [new_line]
+            new_line = %{
+              "item_uuid" => item_uuid,
+              "name" => WarehouseBrowser.localized_name(item, locale),
+              "sku" => item.sku,
+              "category_uuid" => item.category_uuid,
+              "catalogue_uuid" => item.catalogue_uuid,
+              "unit" => item.unit,
+              "counted_quantity" => StockLedger.to_decimal(qty),
+              "unit_value" => unit_value
+            }
+
+            lines ++ [new_line]
+        end
       end
 
     names = build_names_map(lines, locale)
@@ -1265,9 +1279,8 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLive do
   # instead of being re-added as a duplicate.
   defp selected_items(lines) do
     Enum.reduce(lines, %{}, fn
-      %{"item_uuid" => uuid, "counted_quantity" => %Decimal{} = qty}, acc
-      when is_binary(uuid) ->
-        Map.put(acc, uuid, qty)
+      %{"item_uuid" => uuid} = line, acc when is_binary(uuid) ->
+        Map.put(acc, uuid, StockLedger.to_decimal(line["counted_quantity"]))
 
       _, acc ->
         acc

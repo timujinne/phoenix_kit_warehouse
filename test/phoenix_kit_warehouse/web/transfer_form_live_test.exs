@@ -731,7 +731,6 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("4"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       state = :sys.get_state(lv.pid)
       assert state.socket.assigns.show_item_selector == false
@@ -750,12 +749,29 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("2"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
-      :timer.sleep(50)
       send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       state = :sys.get_state(lv.pid)
       assert length(state.socket.assigns.lines) == 1
+    end
+
+    test "a missing catalogue item is skipped instead of crashing the LiveView", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      transfer = create_draft()
+
+      {:ok, lv, _html} = live(conn, items_path(transfer.uuid))
+
+      pick = %{
+        uuid: Ecto.UUID.generate(),
+        qty: Decimal.new("1"),
+        unit: "pcs",
+        name: "gone"
+      }
+
+      send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
+
+      assert :sys.get_state(lv.pid).socket.assigns.lines == []
     end
 
     test "does nothing once the transfer has shipped", %{conn: conn} do
@@ -776,7 +792,6 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
       }
 
       send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       state = :sys.get_state(lv.pid)
       refute Enum.any?(state.socket.assigns.lines, &(&1["item_uuid"] == new_item.uuid))
@@ -794,7 +809,6 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
       :sys.replace_state(lv.pid, fn s -> put_in(s.socket.assigns[:show_item_selector], true) end)
 
       send(lv.pid, {:item_selector_closed, %{id: "transfer-item-selector"}})
-      :timer.sleep(50)
 
       assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == false
     end

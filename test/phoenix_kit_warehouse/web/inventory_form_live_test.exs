@@ -151,7 +151,6 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveTest do
 
       pick = %{uuid: item.uuid, qty: Decimal.new("3"), unit: item.unit, name: item.name}
       send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
-      :timer.sleep(50)
 
       html = render(lv)
       assert html =~ item.name

@@ -133,14 +133,7 @@ defmodule PhoenixKitWarehouse.Web.SupplierOrderIndexLive do
       |> Enum.filter(& &1)
       |> Enum.uniq()
 
-    suppliers_by_uuid =
-      if supplier_uuids == [] do
-        %{}
-      else
-        Catalogue.list_suppliers()
-        |> Enum.filter(&(&1.uuid in supplier_uuids))
-        |> Map.new(&{&1.uuid, &1})
-      end
+    suppliers_by_uuid = Catalogue.resolve_suppliers(supplier_uuids)
 
     internal_order_uuids =
       orders |> Enum.map(& &1.internal_order_uuid) |> Enum.filter(& &1) |> Enum.uniq()

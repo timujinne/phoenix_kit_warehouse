@@ -118,6 +118,7 @@ defmodule PhoenixKitWarehouse.Web.GoodsReceiptIndexLiveTest do
       {:ok, _lv, html} = live(conn, index_path())
 
       assert html =~ "#GR-#{receipt.number}"
+      assert html =~ supplier.name
     end
 
     test "excludes soft-deleted receipts", %{conn: conn} do

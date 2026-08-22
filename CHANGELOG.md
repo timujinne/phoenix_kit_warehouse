@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-08-22
+
+### Added
+
+- **Item adding on internal orders, stocktakes, and transfers now goes
+  through the catalogue's `ItemSelectorModal`** (#23). The warehouse-local
+  `add_picker/1` (tree/search/add UI that never touched a stock-specific
+  field) is gone. Confirming a selection seeds each new line with the
+  picked quantity instead of always starting at zero; re-adding an
+  already-present item is still a no-op.
+
+### Changed
+
+- **⚠️ Requires `phoenix_kit_catalogue ~> 0.18`.** `ItemSelectorModal`
+  first shipped in catalogue 0.18.0. The previous `~> 0.13` pin would
+  still resolve 0.13–0.17, which this package cannot compile against.
+  Locked in with `test/catalogue_pin_conformance_test.exs`.
+- **Documentation now matches the actual dependency contract.** The
+  `PhoenixKitWarehouse` moduledoc claimed `PhoenixKitComments` "stays optional
+  (guarded via `Code.ensure_loaded?/1`)", and `AGENTS.md` said the same. Neither
+  was true: `phoenix_kit_comments` is not declared `optional:` in `mix.exs`, and
+  six form LiveViews `use PhoenixKitComments.Embed`, which is macro expansion at
+  compile time and cannot be guarded. All four sibling packages are now
+  described as hard dependencies, with the distinction a reader actually needs
+  spelled out — a hard *package* dependency is not a required *module*, and
+  `required_modules/0` lists only `"catalogue"` and `"locations"`. The moduledoc
+  also no longer implies billing is enablement-checked; it isn't, its component
+  is imported unconditionally.
+- `PhoenixKitWarehouse.Comments`' moduledoc now states what "unavailable" covers
+  (installed-but-disabled) and what it does not (version skew — `available?/0`
+  returns `true` against comments 0.2.6/0.2.7, where `subscribe/2` and the batch
+  `count_comments/2` do not yet exist; the `>= 0.2.8` floor is what closes that,
+  not any guard in the module). The `Code.ensure_loaded?/1` check and the
+  `@compile {:no_warn_undefined, ...}` attribute are labelled as the always-true
+  residue they are.
+- Dependency updates (`phoenix_kit` 2.13.6, `phoenix_kit_catalogue` 0.18.0,
+  `rustler` 0.38.0).
+
+### Fixed
+
+- **`mdex_native` force-builds under `MDEX_NATIVE_BUILD=1`** (#20). Declares
+  `rustler` as an optional Hex dep, matching `phoenix_kit`'s own `mix.exs`,
+  so a clean checkout of this repo can compile the NIF from source on OTP
+  28 (no precompiled artefact). A host application still has to declare
+  `rustler` itself — optional deps of deps are never resolved.
+- **Supplier names on goods receipts and supplier orders resolve through
+  CRM when the local row is linked** (#21). `Catalogue.resolve_supplier/1`
+  replaces `get_supplier/1` on the two form LiveViews, so a
+  `crm_company_uuid` link shows the party's current name instead of the
+  local snapshot. Post-merge: the two *index* LiveViews had the same stale
+  snapshot (they used `list_suppliers/0`); both now call
+  `resolve_suppliers/1`.
+- **Eight top-level admin tabs set `visible: true` explicitly** (#22).
+  Core 2.6.0 made an unset `Tab.visible` mean "auto" (`nil`), and this
+  module's own test was reading the raw field, so the 8 nav tabs looked
+  hidden to the suite. The rendered sidebar was never affected. Also
+  corrects the hardcoded tab count 37 → 38 (Turnover).
+- **ItemSelectorModal host wiring** (review of #23): already-counted
+  stocktake lines round-tripped through JSONB as strings were dropped from
+  the modal's `selected` map (Decimal-only match), so they looked pickable
+  again; all three LiveViews now coerce through `StockLedger.to_decimal/1`.
+  Scope is `%{statuses: ["active"]}` (warehouse never stocks inactive
+  items). Locale and `qty_precision: 6` are passed through so the modal
+  matches the warehouse `@locale` and `step="any"` quantity inputs. A
+  pick whose catalogue row is gone is skipped instead of crashing the
+  LiveView via `get_item!/1`.
+
 ## 0.3.2 - 2026-08-16
 
 ### Fixed
@@ -74,29 +141,6 @@ All notable changes to this project will be documented in this file.
   rows render translated labels instead of falling back to a raw key, plus a
   test pinning the metadata shape — a missing key degrades silently into an
   untranslated label rather than an error.
-
-## Unreleased
-
-### Changed
-
-- **Documentation now matches the actual dependency contract.** The
-  `PhoenixKitWarehouse` moduledoc claimed `PhoenixKitComments` "stays optional
-  (guarded via `Code.ensure_loaded?/1`)", and `AGENTS.md` said the same. Neither
-  was true: `phoenix_kit_comments` is not declared `optional:` in `mix.exs`, and
-  six form LiveViews `use PhoenixKitComments.Embed`, which is macro expansion at
-  compile time and cannot be guarded. All four sibling packages are now
-  described as hard dependencies, with the distinction a reader actually needs
-  spelled out — a hard *package* dependency is not a required *module*, and
-  `required_modules/0` lists only `"catalogue"` and `"locations"`. The moduledoc
-  also no longer implies billing is enablement-checked; it isn't, its component
-  is imported unconditionally.
-- `PhoenixKitWarehouse.Comments`' moduledoc now states what "unavailable" covers
-  (installed-but-disabled) and what it does not (version skew — `available?/0`
-  returns `true` against comments 0.2.6/0.2.7, where `subscribe/2` and the batch
-  `count_comments/2` do not yet exist; the `>= 0.2.8` floor is what closes that,
-  not any guard in the module). The `Code.ensure_loaded?/1` check and the
-  `@compile {:no_warn_undefined, ...}` attribute are labelled as the always-true
-  residue they are.
 
 ## 0.2.7 - 2026-08-06
 

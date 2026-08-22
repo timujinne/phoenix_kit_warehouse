@@ -118,6 +118,7 @@ defmodule PhoenixKitWarehouse.Web.SupplierOrderIndexLiveTest do
       {:ok, _lv, html} = live(conn, index_path())
 
       assert html =~ "#SO-#{order.number}"
+      assert html =~ supplier.name
     end
 
     test "excludes soft-deleted orders", %{conn: conn} do

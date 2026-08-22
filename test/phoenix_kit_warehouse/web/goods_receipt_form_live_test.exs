@@ -204,6 +204,16 @@ defmodule PhoenixKitWarehouse.Web.GoodsReceiptFormLiveTest do
 
       assert html =~ "#GR-#{receipt.number}"
     end
+
+    test "resolves the catalogue supplier name onto the form", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      {receipt, supplier} = create_draft()
+
+      {:ok, _lv, html} = live(conn, edit_path(receipt.uuid))
+
+      assert html =~ supplier.name
+    end
   end
 
   # ---------------------------------------------------------------------------

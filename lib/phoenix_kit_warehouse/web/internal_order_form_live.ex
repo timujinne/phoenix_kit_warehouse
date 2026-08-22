@@ -33,6 +33,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   alias PhoenixKitWarehouse.DocRefs
   alias PhoenixKitWarehouse.GoodsIssues
   alias PhoenixKitWarehouse.InternalOrders
+  alias PhoenixKitWarehouse.StockLedger
   alias PhoenixKitWarehouse.StorageFolders
   alias PhoenixKitWarehouse.SupplierOrders
   alias PhoenixKitWarehouse.Web.Components.{CommentsPanel, RelatedDocuments, WarehouseBrowser}
@@ -222,7 +223,13 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
   @impl true
   def handle_event("open_item_selector", _params, socket) do
-    {:noreply, assign(socket, :show_item_selector, true)}
+    posted? = socket.assigns.order && socket.assigns.order.status == "posted"
+
+    if posted? do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, :show_item_selector, true)}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -1058,8 +1065,10 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           :if={@show_item_selector}
           module={ItemSelectorModal}
           id="internal-order-item-selector"
-          scope={%{}}
+          scope={%{statuses: ["active"]}}
           selected={selected_items(@lines)}
+          locale={@locale}
+          qty_precision={6}
         />
       <% end %>
 
@@ -1240,19 +1249,23 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       if already_present? do
         lines
       else
-        item = Catalogue.get_item!(item_uuid)
+        case Catalogue.get_item(item_uuid) do
+          nil ->
+            lines
 
-        new_line = %{
-          "item_uuid" => item_uuid,
-          "name" => WarehouseBrowser.localized_name(item, locale),
-          "sku" => item.sku,
-          "catalogue_uuid" => item.catalogue_uuid,
-          "category_uuid" => item.category_uuid,
-          "unit" => item.unit,
-          "required_quantity" => Decimal.to_string(qty)
-        }
+          item ->
+            new_line = %{
+              "item_uuid" => item_uuid,
+              "name" => WarehouseBrowser.localized_name(item, locale),
+              "sku" => item.sku,
+              "catalogue_uuid" => item.catalogue_uuid,
+              "category_uuid" => item.category_uuid,
+              "unit" => item.unit,
+              "required_quantity" => qty |> StockLedger.to_decimal() |> Decimal.to_string(:normal)
+            }
 
-        lines ++ [new_line]
+            lines ++ [new_line]
+        end
       end
 
     names = build_names_map(lines, locale)
@@ -1288,11 +1301,8 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   # of being re-added as a duplicate.
   defp selected_items(lines) do
     Enum.reduce(lines, %{}, fn
-      %{"item_uuid" => uuid, "required_quantity" => qty}, acc when is_binary(uuid) ->
-        case Decimal.parse(qty || "0") do
-          {decimal, _} -> Map.put(acc, uuid, decimal)
-          :error -> acc
-        end
+      %{"item_uuid" => uuid} = line, acc when is_binary(uuid) ->
+        Map.put(acc, uuid, StockLedger.to_decimal(line["required_quantity"]))
 
       _, acc ->
         acc
