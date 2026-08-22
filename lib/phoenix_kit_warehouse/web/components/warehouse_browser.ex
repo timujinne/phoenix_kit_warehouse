@@ -2,13 +2,18 @@ defmodule PhoenixKitWarehouse.Web.Components.WarehouseBrowser do
   @moduledoc """
   Warehouse-specific catalogue tree components.
 
-  Three stateless function components driven by assigns from the parent LiveView:
+  Stateless function components driven by assigns from the parent LiveView:
 
   - `stock_tree/1` — read-only lazy tree annotated with stock quantity and value.
-  - `add_picker/1` — lazy tree with search and an Add action per item, for adding
-    positions to an inventory document.
   - `count_sheet/1` — editable table of inventory document lines grouped by
     catalogue → category, with conditional price/sum columns.
+
+  Adding new positions to a document (internal orders, stocktakes, transfers)
+  goes through `PhoenixKitCatalogue.Web.Components.ItemSelectorModal` directly
+  — not through a component here. The picker that used to live in this module
+  (`add_picker/1`) only ever added lines; it never touched a stock-specific
+  field, so nothing warehouse-specific was lost by routing that action through
+  the catalogue's own selector instead.
 
   Tree toggle state (`expanded_catalogues`, `expanded_categories`,
   `loaded_categories`, `loaded_items`) lives in the parent LV. These components
@@ -21,7 +26,6 @@ defmodule PhoenixKitWarehouse.Web.Components.WarehouseBrowser do
   import PhoenixKitBilling.Web.Components.CurrencyDisplay, only: [currency_compact: 1]
   import PhoenixKitWeb.Components.Core.Icon, only: [icon: 1]
   import PhoenixKitWeb.Components.Core.Modal, only: [modal: 1]
-  import PhoenixKitCatalogue.Web.Components, only: [search_input: 1]
 
   alias PhoenixKitCatalogue.Catalogue
 
@@ -159,242 +163,6 @@ defmodule PhoenixKitWarehouse.Web.Components.WarehouseBrowser do
                 </div>
               <% end %>
             </div>
-          <% end %>
-        </div>
-      <% end %>
-    </div>
-    """
-  end
-
-  # ---------------------------------------------------------------------------
-  # add_picker/1
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  Lazy catalogue tree with search input and an Add button per item.
-
-  Used in the inventory form to add catalogue items not yet in the count sheet
-  (goods receipt). Items whose UUID is in `present_item_uuids` are shown
-  as disabled (already in the sheet). Re-adding a previously removed line is
-  allowed — callers should recompute `present_item_uuids` from the live `lines`
-  after every add/remove.
-
-  The add button fires a `phx-click` with the event named by `add_event`
-  (default `"add_position"`) and `phx-value-item_uuid`.
-  """
-  attr(:catalogue_summaries, :list, required: true)
-  attr(:expanded_catalogues, :any, required: true)
-  attr(:expanded_categories, :any, required: true)
-  attr(:loaded_categories, :map, required: true)
-  attr(:loaded_items, :map, required: true)
-  attr(:locale, :string, required: true)
-  attr(:present_item_uuids, :any, default: MapSet.new())
-  attr(:item_search_query, :string, default: "")
-  attr(:item_search_results, :any, default: nil)
-  attr(:add_event, :string, default: "add_position")
-  attr(:search_mode, :atom, default: :list)
-
-  def add_picker(assigns) do
-    ~H"""
-    <div>
-      <div class="mb-3">
-        <.search_input
-          query={@item_search_query}
-          placeholder={dgettext("default", "Search items by name, SKU...")}
-          on_search="picker_search"
-          on_clear="picker_search_clear"
-        />
-      </div>
-
-      <%= if @search_mode == :tree and @catalogue_summaries == [] do %>
-        <div class="text-center py-8 text-base-content/50">
-          <.icon name="hero-building-storefront" class="w-8 h-8 mx-auto mb-2 opacity-30" />
-          <p>{dgettext("default", "No catalogues available.")}</p>
-        </div>
-      <% end %>
-
-      <%!-- List mode: flat search results only (no catalogue tree) --%>
-      <%= if @search_mode == :list do %>
-        <%= cond do %>
-          <% is_nil(@item_search_results) -> %>
-            <div class="text-center py-8 text-base-content/50">
-              <.icon name="hero-magnifying-glass" class="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p class="text-sm">
-                {dgettext("default", "Type at least 2 characters to search for items.")}
-              </p>
-            </div>
-          <% @item_search_results == [] -> %>
-            <div class="text-center py-6 text-base-content/50">
-              <.icon name="hero-magnifying-glass" class="w-6 h-6 mx-auto mb-2 opacity-30" />
-              <p class="text-sm">{dgettext("default", "No items found")}</p>
-            </div>
-          <% true -> %>
-            <div class="overflow-x-auto bg-base-100 shadow rounded-box">
-              <table class="table table-sm">
-                <tbody>
-                  <%= for item <- @item_search_results do %>
-                    <% present? = MapSet.member?(@present_item_uuids, item.uuid) %>
-                    <tr class={["hover", present? && "opacity-50"]}>
-                      <td>
-                        <div class="font-medium">{localized_name(item, @locale)}</div>
-                        <div class="text-xs text-base-content/40 font-mono">{item.sku}</div>
-                      </td>
-                      <td class="text-xs text-base-content/50">
-                        {unit_label(item.unit)}
-                      </td>
-                      <td class="text-right">
-                        <button
-                          type="button"
-                          phx-click={@add_event}
-                          phx-value-item_uuid={item.uuid}
-                          disabled={present?}
-                          class="btn btn-xs btn-outline btn-primary"
-                        >
-                          + {dgettext("default", "Add")}
-                        </button>
-                      </td>
-                    </tr>
-                  <% end %>
-                </tbody>
-              </table>
-            </div>
-        <% end %>
-      <% end %>
-
-      <%!-- Tree mode: catalogue tree, filtered to matches when searching --%>
-      <%= if @search_mode == :tree and @catalogue_summaries != [] do %>
-        <% match_uuids =
-          if @item_search_results do
-            MapSet.new(@item_search_results, & &1.uuid)
-          else
-            nil
-          end %>
-        <div class="bg-base-300 rounded-box p-1 flex flex-col gap-0.5">
-          <%= for %{catalogue: catalogue} <- @catalogue_summaries do %>
-            <% cat_expanded = MapSet.member?(@expanded_catalogues, catalogue.uuid) %>
-            <%!-- In tree-filter mode, filter catalogue away if none of its loaded items match --%>
-            <% catalogue_visible =
-              if match_uuids do
-                @loaded_items
-                |> Enum.filter(fn {{cat_uuid, _}, _} -> cat_uuid == catalogue.uuid end)
-                |> Enum.any?(fn {_, items} ->
-                  Enum.any?(items, &MapSet.member?(match_uuids, &1.uuid))
-                end) ||
-                  Enum.any?(@item_search_results, fn item ->
-                    item.catalogue_uuid == catalogue.uuid
-                  end)
-              else
-                true
-              end %>
-            <%= if catalogue_visible do %>
-              <div class={[
-                "collapse collapse-arrow bg-base-100 shadow !overflow-visible",
-                open_class(cat_expanded || (match_uuids != nil and catalogue_visible))
-              ]}>
-                <div
-                  class="collapse-title min-h-0 py-2 font-semibold text-base-content/80 flex items-center gap-2 cursor-pointer bg-base-300"
-                  phx-click="toggle_catalogue"
-                  phx-value-uuid={catalogue.uuid}
-                >
-                  <.icon name="hero-rectangle-stack" class="w-4 h-4" />
-                  {catalogue_display_name(catalogue, @locale)}
-                </div>
-                <%= if cat_expanded || (match_uuids != nil) do %>
-                  <div class="collapse-content px-0 pt-0 pb-0">
-                    <%= for %{category: category} <- Map.get(@loaded_categories, catalogue.uuid, []) do %>
-                      <% cat_key = if category, do: category.uuid, else: "uncategorized" %>
-                      <% category_expanded =
-                        MapSet.member?(@expanded_categories, {catalogue.uuid, cat_key}) %>
-                      <% category_items = Map.get(@loaded_items, {catalogue.uuid, cat_key}, []) %>
-                      <%!-- In tree-filter mode, only show categories that have matching items --%>
-                      <% category_visible =
-                        if match_uuids do
-                          Enum.any?(category_items, &MapSet.member?(match_uuids, &1.uuid)) ||
-                            (@item_search_results != nil &&
-                               Enum.any?(@item_search_results, fn item ->
-                                 (is_nil(category) && is_nil(item.category_uuid)) ||
-                                   (category != nil && item.category_uuid == category.uuid)
-                               end))
-                        else
-                          true
-                        end %>
-                      <%= if category_visible do %>
-                        <div class={[
-                          "collapse collapse-arrow bg-base-200/50 mb-0.5",
-                          open_class(category_expanded || match_uuids != nil)
-                        ]}>
-                          <div
-                            class="collapse-title min-h-0 py-1.5 pl-6 font-medium text-sm flex items-center gap-2 cursor-pointer"
-                            phx-click="toggle_category"
-                            phx-value-catalogue_uuid={catalogue.uuid}
-                            phx-value-key={cat_key}
-                          >
-                            <.icon name="hero-folder" class="w-4 h-4 text-base-content/50" />
-                            {if category,
-                              do: localized_name(category, @locale),
-                              else: dgettext("default", "Uncategorized")}
-                          </div>
-                          <%= if category_expanded || match_uuids != nil do %>
-                            <div class="collapse-content pl-8 pr-2 pt-0 pb-2">
-                              <% items = Map.get(@loaded_items, {catalogue.uuid, cat_key}, []) %>
-                              <% filtered_items =
-                                if match_uuids do
-                                  Enum.filter(items, &MapSet.member?(match_uuids, &1.uuid))
-                                else
-                                  items
-                                end %>
-                              <%= if filtered_items == [] and is_nil(match_uuids) do %>
-                                <p class="text-xs text-base-content/40 py-2 pl-2">
-                                  {dgettext("default", "No items")}
-                                </p>
-                              <% else %>
-                                <%= if filtered_items == [] and match_uuids != nil do %>
-                                  <p class="text-xs text-base-content/40 py-2 pl-2">
-                                    {dgettext("default", "No matching items")}
-                                  </p>
-                                <% else %>
-                                  <table class="table table-xs w-full">
-                                    <tbody>
-                                      <%= for item <- filtered_items do %>
-                                        <% present? = MapSet.member?(@present_item_uuids, item.uuid) %>
-                                        <tr class={["hover", present? && "opacity-50"]}>
-                                          <td>
-                                            <div class={["font-medium", present? && "line-through"]}>
-                                              {localized_name(item, @locale)}
-                                            </div>
-                                            <div class="text-xs text-base-content/40 font-mono">
-                                              {item.sku}
-                                            </div>
-                                          </td>
-                                          <td class="text-xs text-base-content/50">
-                                            {unit_label(item.unit)}
-                                          </td>
-                                          <td class="text-right">
-                                            <button
-                                              type="button"
-                                              phx-click={@add_event}
-                                              phx-value-item_uuid={item.uuid}
-                                              disabled={present?}
-                                              class="btn btn-xs btn-outline btn-primary"
-                                            >
-                                              + {dgettext("default", "Add")}
-                                            </button>
-                                          </td>
-                                        </tr>
-                                      <% end %>
-                                    </tbody>
-                                  </table>
-                                <% end %>
-                              <% end %>
-                            </div>
-                          <% end %>
-                        </div>
-                      <% end %>
-                    <% end %>
-                  </div>
-                <% end %>
-              </div>
-            <% end %>
           <% end %>
         </div>
       <% end %>

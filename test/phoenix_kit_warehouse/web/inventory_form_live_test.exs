@@ -139,28 +139,26 @@ defmodule PhoenixKitWarehouse.Web.InventoryFormLiveTest do
       assert html =~ item.name
     end
 
-    test "add_position appends a line for a catalogue item not in the sheet", %{conn: conn} do
+    test "handle_info({:items_selected, ...}) appends a line seeded with the picked quantity",
+         %{conn: conn} do
       admin = create_admin_user()
       cat = create_catalogue!()
       item = create_active_item!(cat)
 
-      # Item has NO stock — so it is not seeded; we need to add it via the picker
+      # Item has NO stock — so it is not seeded; we need to add it via the selector
       conn = log_in_admin(conn, admin)
       {:ok, lv, _html} = follow_to_items(conn)
 
-      # Open the add-item picker modal, then search for the item
-      lv |> element("[phx-click='open_add_picker']") |> render_click()
+      pick = %{uuid: item.uuid, qty: Decimal.new("3"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "inventory-item-selector", picks: [pick]}})
+      :timer.sleep(50)
 
-      lv
-      |> element("form[phx-change='picker_search']")
-      |> render_change(%{"query" => item.sku})
-
-      html =
-        lv
-        |> element("[phx-click='add_position'][phx-value-item_uuid='#{item.uuid}']")
-        |> render_click()
-
+      html = render(lv)
       assert html =~ item.name
+
+      [line] = :sys.get_state(lv.pid).socket.assigns.lines
+      assert line["item_uuid"] == item.uuid
+      assert Decimal.equal?(line["counted_quantity"], Decimal.new("3"))
     end
 
     test "remove_line drops a line from the count sheet", %{conn: conn} do

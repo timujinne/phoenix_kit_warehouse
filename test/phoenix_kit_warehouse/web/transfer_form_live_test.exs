@@ -7,6 +7,7 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Users.Roles
   alias PhoenixKit.Utils.Routes
+  alias PhoenixKitCatalogue.Catalogue
   alias PhoenixKitLocations.Locations
   alias PhoenixKitWarehouse.StockLedger
   alias PhoenixKitWarehouse.Test.Fixtures
@@ -96,6 +97,21 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
   defp create_draft(attrs \\ %{}) do
     {:ok, transfer} = Transfers.create_transfer(attrs)
     transfer
+  end
+
+  defp create_catalogue_item! do
+    {:ok, catalogue} =
+      Catalogue.create_catalogue(%{name: "TR Form Test #{System.unique_integer([:positive])}"})
+
+    {:ok, item} =
+      Catalogue.create_item(%{
+        name: "TR Test Item #{System.unique_integer([:positive])}",
+        catalogue_uuid: catalogue.uuid,
+        base_price: "10.00",
+        status: "active"
+      })
+
+    item
   end
 
   defp create_draft_with_lines(source, destination, item_uuid, qty) do
@@ -684,6 +700,103 @@ defmodule PhoenixKitWarehouse.Web.TransferFormLiveTest do
       refute html =~ "##{customer_order.data["order_number"]}"
       {:ok, updated} = Transfers.get_transfer(transfer.uuid)
       assert updated.source_refs == []
+    end
+  end
+
+  describe "\"Add item\" button" do
+    test "opens ItemSelectorModal", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      transfer = create_draft()
+
+      {:ok, lv, html} = live(conn, items_path(transfer.uuid))
+
+      refute html =~ "transfer-item-selector"
+
+      html = lv |> element("button[phx-click='open_item_selector']") |> render_click()
+
+      assert html =~ "transfer-item-selector"
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == true
+    end
+  end
+
+  describe "handle_info({:items_selected, ...}) (ItemSelectorModal confirm)" do
+    test "adds a line seeded with the picked quantity", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      transfer = create_draft()
+      item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(transfer.uuid))
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("4"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      assert state.socket.assigns.show_item_selector == false
+      [line] = state.socket.assigns.lines
+      assert line["item_uuid"] == item.uuid
+      assert line["transfer_quantity"] == "4"
+    end
+
+    test "re-adding an already-present item does not duplicate it", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      transfer = create_draft()
+      item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(transfer.uuid))
+
+      pick = %{uuid: item.uuid, qty: Decimal.new("2"), unit: item.unit, name: item.name}
+      send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+      send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      assert length(state.socket.assigns.lines) == 1
+    end
+
+    test "does nothing once the transfer has shipped", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      [source, destination] = setup_warehouses!(["Src", "Dst"])
+      seed_item = create_catalogue_item!()
+      shipped = ship!(source, destination, seed_item.uuid, "1")
+      new_item = create_catalogue_item!()
+
+      {:ok, lv, _html} = live(conn, items_path(shipped.uuid))
+
+      pick = %{
+        uuid: new_item.uuid,
+        qty: Decimal.new("2"),
+        unit: new_item.unit,
+        name: new_item.name
+      }
+
+      send(lv.pid, {:items_selected, %{id: "transfer-item-selector", picks: [pick]}})
+      :timer.sleep(50)
+
+      state = :sys.get_state(lv.pid)
+      refute Enum.any?(state.socket.assigns.lines, &(&1["item_uuid"] == new_item.uuid))
+    end
+  end
+
+  describe "handle_info({:item_selector_closed, ...})" do
+    test "closes the modal", %{conn: conn} do
+      admin = create_admin_user()
+      conn = log_in_admin(conn, admin)
+      transfer = create_draft()
+
+      {:ok, lv, _html} = live(conn, items_path(transfer.uuid))
+
+      :sys.replace_state(lv.pid, fn s -> put_in(s.socket.assigns[:show_item_selector], true) end)
+
+      send(lv.pid, {:item_selector_closed, %{id: "transfer-item-selector"}})
+      :timer.sleep(50)
+
+      assert :sys.get_state(lv.pid).socket.assigns.show_item_selector == false
     end
   end
 end
