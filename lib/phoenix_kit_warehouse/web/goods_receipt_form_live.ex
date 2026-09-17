@@ -1285,15 +1285,13 @@ defmodule PhoenixKitWarehouse.Web.GoodsReceiptFormLive do
                     phx-submit="set_received_qty"
                   >
                     <input type="hidden" name="index" value={index} />
-                    <input
-                      type="number"
+                    <.decimal_input
                       id={"gr-rcv-#{index}"}
                       name="received_quantity"
-                      min="0"
-                      step="any"
                       value={fmt_qty(line["received_quantity"])}
                       placeholder="0"
-                      class="input input-sm w-24 text-right tabular-nums"
+                      class="input-sm text-right tabular-nums"
+                      wrapper_class="inline-block w-24"
                       phx-debounce="blur"
                       phx-hook="InvEnterBlur"
                     />
