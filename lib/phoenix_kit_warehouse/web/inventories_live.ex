@@ -28,7 +28,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
       sort_by: [
         default: "number",
         url_key: "sort",
-        in: ~w(number date status note posted_at lines_count created_by performed_by)
+        in: ~w(number date status note posted_at lines_count external_ref created_by performed_by)
       ],
       sort_dir: [default: :desc, cast: :atom, in: [:asc, :desc], url_key: "dir"]
     ]
@@ -43,7 +43,14 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
   alias PhoenixKitWarehouse.ColumnConfig.Inventories, as: InventoryColumnConfig
   alias PhoenixKitWarehouse.Inventories
   alias PhoenixKitWarehouse.Web.ColumnManagement
-  alias PhoenixKitWarehouse.Web.Components.{ColumnModal, FilterChips, WarehouseHeader}
+
+  alias PhoenixKitWarehouse.Web.Components.{
+    ColumnModal,
+    FilterChips,
+    SetupNotice,
+    WarehouseHeader
+  }
+
   alias PhoenixKitWarehouse.Web.UserNames
 
   # Opt out of PhoenixKit's auto admin-chrome layout (applied to external Andi
@@ -68,6 +75,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
     socket =
       socket
       |> assign(:page_title, dgettext("default", "Warehouse"))
+      |> SetupNotice.assign_setup_status()
       |> assign(:locale, locale)
       |> assign(:current_user_uuid, user_uuid)
       |> assign(:documents, [])
@@ -162,6 +170,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
         inserted_at: doc.inserted_at,
         posted_at: doc.posted_at,
         note: doc.note,
+        external_ref: doc.external_ref,
         lines_count: length(doc.lines || [])
       }
     end)
@@ -271,6 +280,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
     >
       <div class="flex flex-col mx-auto max-w-none sm:px-4 py-2 sm:py-6 gap-2">
         <WarehouseHeader.warehouse_header active={:inventories} />
+        <SetupNotice.setup_notice status={@setup_status} />
 
         <.table_default
           id="inventory-documents-table"
@@ -502,6 +512,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
   end
 
   defp render_cell("note", entry), do: emdash(entry.note)
+  defp render_cell("external_ref", entry), do: emdash(entry.external_ref)
   defp render_cell("created_by", entry), do: entry.created_by
   defp render_cell("performed_by", entry), do: entry.performed_by
   defp render_cell(_col, _entry), do: "—"
@@ -526,6 +537,7 @@ defmodule PhoenixKitWarehouse.Web.InventoriesLive do
   defp render_card_value("posted_at", entry), do: fmt_date(entry.posted_at)
   defp render_card_value("lines_count", entry), do: entry.lines_count
   defp render_card_value("note", entry), do: emdash(entry.note)
+  defp render_card_value("external_ref", entry), do: emdash(entry.external_ref)
   defp render_card_value("created_by", entry), do: entry.created_by
   defp render_card_value("performed_by", entry), do: entry.performed_by
   defp render_card_value(_col, _entry), do: "—"

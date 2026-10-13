@@ -1,6 +1,6 @@
 defmodule PhoenixKitWarehouse.GettextTest do
   @moduledoc """
-  Pins live `dgettext` output for every bundled locale (en/et/ru).
+  Pins live `dgettext` output for every bundled locale (en/et/ru/uk).
 
   Guards against gettext.merge fuzzy pollution — a past incident in this
   workspace fuzzy-matched unrelated msgids and shipped wrong ENGLISH strings,
@@ -53,6 +53,45 @@ defmodule PhoenixKitWarehouse.GettextTest do
     with_locale("ru", fn ->
       refute t("Posted") == "Sisestatud"
     end)
+  end
+
+  test "et and ru translate the reason and external reference strings" do
+    with_locale("et", fn ->
+      assert t("Reason") == "Põhjus"
+      assert t("Production") == "Tootmine"
+      assert t("Sale") == "Müük"
+      assert t("Damage") == "Kahjustus"
+      assert t("Other") == "Muu"
+      assert t("External ref") == "Väline viide"
+      assert t("Failed to change reason") == "Põhjuse vahetamine ebaõnnestus"
+    end)
+
+    with_locale("ru", fn ->
+      for msgid <-
+            ["Reason", "Production", "Sale", "Damage", "Other", "External ref"] ++
+              ["Failed to change reason"],
+          do: refute(t(msgid) == msgid, "#{msgid} is not translated into ru")
+    end)
+  end
+
+  describe "catalogues are complete" do
+    @catalogues for locale <- ~w(en et ru),
+                    do:
+                      {locale,
+                       Path.join(["priv", "gettext", locale, "LC_MESSAGES", "default.po"])}
+
+    for {locale, path} <- @catalogues do
+      test "#{locale} has no empty or fuzzy msgstr" do
+        %Expo.Messages{messages: messages} = Expo.PO.parse_file!(unquote(path))
+
+        incomplete =
+          for %Expo.Message.Singular{msgid: msgid, msgstr: msgstr, flags: flags} <- messages,
+              IO.iodata_to_binary(msgstr) == "" or Enum.any?(flags, &("fuzzy" in &1)),
+              do: IO.iodata_to_binary(msgid)
+
+        assert incomplete == []
+      end
+    end
   end
 
   describe "permission_metadata/0 gettext wiring" do

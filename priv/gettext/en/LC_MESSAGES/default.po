@@ -1475,7 +1475,7 @@ msgstr "Update price"
 #: lib/phoenix_kit_warehouse.ex:692
 #, elixir-format, elixir-autogen
 msgid "Warehouse stock, stocktakes, and document management"
-msgstr ""
+msgstr "Warehouse stock, stocktakes, and document management"
 
 #: lib/phoenix_kit_warehouse.ex:691
 #: lib/phoenix_kit_warehouse/web/goods_issue_index_live.ex:56
@@ -1515,10 +1515,41 @@ msgid "Warehouse location type"
 msgstr "Warehouse location type"
 
 #: lib/phoenix_kit_warehouse/web/settings_live.ex:61
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:66
 #: lib/phoenix_kit_warehouse/web/settings_live.ex:81
 #, elixir-autogen, elixir-format
 msgid "Warehouse settings"
 msgstr "Warehouse settings"
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:49
+#, elixir-autogen, elixir-format
+msgid "Warehouse is not set up yet"
+msgstr "Warehouse is not set up yet"
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:76
+#, elixir-autogen, elixir-format
+msgid "Create a location type for warehouses in Locations, then choose it in Warehouse settings."
+msgstr "Create a location type for warehouses in Locations, then choose it in Warehouse settings."
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:81
+#, elixir-autogen, elixir-format
+msgid "Add at least one location of the warehouse type in Locations."
+msgstr "Add at least one location of the warehouse type in Locations."
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:85
+#, elixir-autogen, elixir-format
+msgid "Choose the default warehouse in Warehouse settings."
+msgstr "Choose the default warehouse in Warehouse settings."
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:95
+#, elixir-autogen, elixir-format
+msgid "Open Locations"
+msgstr "Open Locations"
+
+#: lib/phoenix_kit_warehouse/web/components/setup_notice.ex:98
+#, elixir-autogen, elixir-format
+msgid "Add a location"
+msgstr "Add a location"
 
 #: lib/phoenix_kit_warehouse/web/components/warehouse_browser.ex:770
 #, elixir-autogen, elixir-format
@@ -1941,3 +1972,50 @@ msgstr "— select —"
 #, elixir-autogen, elixir-format
 msgid "Created by"
 msgstr "Created by"
+
+#: lib/phoenix_kit_warehouse/column_config/goods_issues.ex:34
+#: lib/phoenix_kit_warehouse/web/goods_issue_form_live.ex:842
+#, elixir-autogen, elixir-format
+msgid "Reason"
+msgstr "Reason"
+
+#: lib/phoenix_kit_warehouse/goods_issues.ex:36
+#, elixir-autogen, elixir-format
+msgid "Production"
+msgstr "Production"
+
+#: lib/phoenix_kit_warehouse/goods_issues.ex:37
+#, elixir-autogen, elixir-format
+msgid "Sale"
+msgstr "Sale"
+
+#: lib/phoenix_kit_warehouse/goods_issues.ex:38
+#, elixir-autogen, elixir-format
+msgid "Damage"
+msgstr "Damage"
+
+#: lib/phoenix_kit_warehouse/goods_issues.ex:39
+#, elixir-autogen, elixir-format
+msgid "Other"
+msgstr "Other"
+
+#: lib/phoenix_kit_warehouse/column_config.ex:219
+#: lib/phoenix_kit_warehouse/web/goods_issue_form_live.ex:860
+#, elixir-autogen, elixir-format
+msgid "External ref"
+msgstr "External ref"
+
+#: lib/phoenix_kit_warehouse/web/goods_issue_form_live.ex:322
+#, elixir-autogen, elixir-format
+msgid "Failed to change reason"
+msgstr "Failed to change reason"
+
+#: lib/phoenix_kit_warehouse/web/inventory_form_live.ex:185
+#, elixir-autogen, elixir-format
+msgid "Set the default warehouse in the warehouse settings first."
+msgstr "Set the default warehouse in the warehouse settings first."
+
+#: lib/phoenix_kit_warehouse/web/goods_issue_form_live.ex:405
+#, elixir-autogen, elixir-format
+msgid "External ref %{ref} is already used by a posted goods issue."
+msgstr "External ref %{ref} is already used by a posted goods issue."
