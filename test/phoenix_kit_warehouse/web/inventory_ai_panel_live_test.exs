@@ -4,6 +4,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryAIPanelLiveTest do
   # answer, the warehouse change, the posting, the server's checks.
   use PhoenixKitWarehouse.LiveCase, async: false
 
+  import Ecto.Query, only: [from: 2]
   import PhoenixKitWarehouse.Test.InventoryAIFixtures
 
   alias PhoenixKit.Modules.Storage
@@ -144,7 +145,7 @@ defmodule PhoenixKitWarehouse.Web.InventoryAIPanelLiveTest do
       assert has_element?(lv, "#inventory-ai-area #inventory-ai-panel")
     end
 
-    test "the list of batches keeps the state a person opened it in through an update", ctx do
+    test "the list of batches is marked to keep its open state through an update", ctx do
       run!(ctx, "A", [object(%{"catalogue_no" => 1, "loose_units" => 480})])
       lv = open!(ctx)
 
@@ -438,6 +439,22 @@ defmodule PhoenixKitWarehouse.Web.InventoryAIPanelLiveTest do
       refute has_element?(lv, "#inventory-ai-stored")
     end
 
+    test "a held photo that no longer passes is not held again: no loop of refusals", ctx do
+      {lv, stored, other} = refused_after_store!(ctx)
+
+      other |> Ecto.Changeset.change(status: "error") |> repo().update!()
+
+      from(f in PhoenixKit.Modules.Storage.File, where: f.uuid == ^stored)
+      |> repo().update_all(set: [status: "trashed"])
+
+      html = lv |> form("#inventory-ai-upload-form", %{"place" => "A"}) |> render_submit()
+
+      assert html =~ InventoryAI.error_message(:invalid_photos)
+      assert html =~ "Choose the photos of this batch again."
+      refute html =~ "The photos are kept in the Files tab"
+      assert :sys.get_state(lv.pid).socket.assigns.ai.stored_photos == []
+    end
+
     test "Forget leaves them in the Files tab and sends them with no run", ctx do
       {lv, stored, _other} = refused_after_store!(ctx)
 
@@ -451,6 +468,18 @@ defmodule PhoenixKitWarehouse.Web.InventoryAIPanelLiveTest do
   end
 
   describe "the proposal and Apply" do
+    test "a row far below the stock, ticked by hand, says so", ctx do
+      run = run!(ctx, "Shelf A", [object(%{"catalogue_no" => 1, "loose_units" => 4})])
+      lv = open!(ctx) |> open_run(run)
+
+      refute checked?(lv, 1)
+      refute has_element?(lv, "#inventory-ai-far-below-1")
+
+      tick(lv, 1)
+      assert checked?(lv, 1)
+      assert has_element?(lv, "#inventory-ai-far-below-1")
+    end
+
     test "an alternative without a SKU shows no empty brackets", ctx do
       _bolt = item!(ctx.catalogue, %{name: "Bolt"})
       run = run!(ctx, "Shelf A", [object(%{"catalogue_no" => nil, "alternatives" => [1, 3]})])

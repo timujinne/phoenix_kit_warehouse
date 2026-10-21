@@ -169,6 +169,39 @@ defmodule PhoenixKitWarehouse.InventoryAI.ReviewTest do
       refute row.checked
     end
 
+    test "a tick set before a change of the rule or of the pack size follows the far-below rule" do
+      # The rule: a hand-counted line of 120, stock 150, a photo count of 30.
+      review = Review.new(run([object("A", %{"catalogue_no" => 1, "loose_units" => 30})]))
+      manual = [%{"item_uuid" => "item-1", "counted_quantity" => "120", "counted_by" => "manual"}]
+      stock = stock(%{"item-1" => "150"})
+
+      {:ok, review} = Review.set_checked(review, 1, true)
+      assert view_row(review, 1, manual, stock).checked
+
+      {:ok, review} = Review.set_inputs(review, 1, %{"action" => "replace_all"}, manual, stock)
+      row = view_row(review, 1, manual, stock)
+      assert Decimal.eq?(row.total, 30)
+      refute row.checked
+
+      # Back to adding: the total is fine again and the tick comes back.
+      {:ok, review} = Review.set_inputs(review, 1, %{"action" => "add"}, manual, stock)
+      assert view_row(review, 1, manual, stock).checked
+
+      # The pack size: 4 closed packages, pack size unknown, seeded 450.
+      packs = Review.new(run([object("A", %{"catalogue_no" => 1, "closed_packages" => 4})]))
+      seeded = [%{"item_uuid" => "item-1", "counted_quantity" => "450", "counted_by" => "stock"}]
+      stock = stock(%{"item-1" => "450"})
+
+      {:ok, packs} = Review.set_checked(packs, 1, true)
+      {:ok, packs} = Review.set_inputs(packs, 1, %{"package_size" => "1"}, seeded, stock)
+      row = view_row(packs, 1, seeded, stock)
+      assert Decimal.eq?(row.total, 4)
+      refute row.checked
+
+      {:ok, packs} = Review.set_inputs(packs, 1, %{"package_size" => "100"}, seeded, stock)
+      assert view_row(packs, 1, seeded, stock).checked
+    end
+
     test "the person's tick stands over the default" do
       review = Review.new(run([object("A", %{"catalogue_no" => 1, "loose_units" => 10})]))
       {:ok, review} = Review.set_checked(review, 1, true)
@@ -203,6 +236,29 @@ defmodule PhoenixKitWarehouse.InventoryAI.ReviewTest do
       {:ok, review} = Review.set_inputs(review, 2, %{"quantity" => "7"}, [], stock)
       assert view_row(review, 2, [], stock).checked
 
+      # A typed quantity far below the stock (a dropped digit, a 0) is not
+      # accepted silently: the row is unticked, a tick the person set included.
+      {:ok, review} = Review.set_inputs(review, 1, %{"quantity" => "4"}, [], stock)
+      row = view_row(review, 1, [], stock)
+      refute row.checked
+      assert :sharply_below_stock in row.reasons
+
+      {:ok, review} = Review.set_checked(review, 1, true)
+      {:ok, review} = Review.set_inputs(review, 1, %{"quantity" => "0"}, [], stock)
+      refute view_row(review, 1, [], stock).checked
+
+      # A typo corrected gets its tick back: the far-below rule follows the number.
+      {:ok, review} = Review.set_inputs(review, 1, %{"quantity" => "11"}, [], stock)
+      assert view_row(review, 1, [], stock).checked
+
+      # A tick the person sets after a far-below number stands, with the warning.
+      {:ok, review} = Review.set_inputs(review, 1, %{"quantity" => "2"}, [], stock)
+      refute view_row(review, 1, [], stock).checked
+      {:ok, review} = Review.set_checked(review, 1, true)
+      row = view_row(review, 1, [], stock)
+      assert row.checked
+      assert :sharply_below_stock in row.reasons
+
       # The quantity the row shows, sent again, is no edit: the tick stays the default.
       fresh = Review.new(run([object("A", %{"catalogue_no" => 1, "loose_units" => 10})]))
       {:ok, fresh} = Review.set_inputs(fresh, 1, %{"quantity" => "10"}, [], stock)
@@ -211,6 +267,32 @@ defmodule PhoenixKitWarehouse.InventoryAI.ReviewTest do
   end
 
   describe "the line in the sheet" do
+    test "a typed number followed by a switch that makes the line far below unticks the row" do
+      review = Review.new(run([object("A", %{"catalogue_no" => 1, "loose_units" => 50})], "A"))
+
+      lines = [
+        %{
+          "item_uuid" => "item-1",
+          "counted_quantity" => "400",
+          "counted_by" => "ai",
+          "base_qty" => "0",
+          "ai_parts" => [%{"run_uuid" => "r-b", "place" => "B", "qty" => "400"}]
+        }
+      ]
+
+      stock = stock(%{"item-1" => "450"})
+      assert view_row(review, 1, lines, stock).checked
+
+      {:ok, review} = Review.set_inputs(review, 1, %{"quantity" => "30"}, lines, stock)
+      assert view_row(review, 1, lines, stock).checked
+
+      {:ok, review} = Review.set_inputs(review, 1, %{"action" => "replace_all"}, lines, stock)
+      row = view_row(review, 1, lines, stock)
+      assert Decimal.eq?(row.total, 30)
+      refute row.checked
+      assert :sharply_below_stock in row.reasons
+    end
+
     test "a seeded line is replaced by default, its switch adds; the total follows" do
       review = Review.new(run([object("A", %{"catalogue_no" => 1, "loose_units" => 30})]))
 

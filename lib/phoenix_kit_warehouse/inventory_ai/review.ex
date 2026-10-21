@@ -42,7 +42,8 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
           quantity: String.t() | nil,
           package_size: String.t(),
           action: String.t() | nil,
-          checked: boolean() | nil
+          checked: boolean() | nil,
+          accepted: boolean() | nil
         }
 
   @type t :: %{
@@ -75,7 +76,8 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
       quantity: nil,
       package_size: "",
       action: nil,
-      checked: nil
+      checked: nil,
+      accepted: nil
     }
   end
 
@@ -90,7 +92,15 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
   @spec choose(t(), pos_integer(), map()) :: {:ok, t()} | {:error, :unknown_row}
   def choose(review, key, %{"item_uuid" => item_uuid} = item) do
     with {:ok, entry} <- fetch(review, key) do
-      chosen = %{entry | item: item, quantity: nil, package_size: "", action: nil, checked: nil}
+      chosen = %{
+        entry
+        | item: item,
+          quantity: nil,
+          package_size: "",
+          action: nil,
+          checked: nil,
+          accepted: nil
+      }
 
       case Enum.find(review.rows, &(&1.key != key and item_uuid?(&1, item_uuid))) do
         nil -> {:ok, replace(review, key, chosen)}
@@ -115,7 +125,8 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
       quantity: merged_quantity(review, chosen, other),
       package_size: other.package_size,
       action: nil,
-      checked: nil
+      checked: nil,
+      accepted: nil
     }
 
     review
@@ -188,11 +199,7 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
         |> then(fn entry ->
           case params do
             %{"quantity" => value} when is_binary(value) and value != shown ->
-              %{
-                entry
-                | quantity: String.trim(value),
-                  checked: shown_tick(review, entry, lines, stock_map)
-              }
+              accept_edit(review, entry, String.trim(value), lines, stock_map)
 
             _ ->
               entry
@@ -201,7 +208,7 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
         |> then(fn entry ->
           case params do
             %{"package_size" => value} when is_binary(value) ->
-              %{entry | package_size: String.trim(value)}
+              changed(entry, :package_size, String.trim(value))
 
             _ ->
               entry
@@ -209,8 +216,11 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
         end)
         |> then(fn entry ->
           case params do
-            %{"action" => value} when is_binary(value) and value != "" -> %{entry | action: value}
-            _ -> entry
+            %{"action" => value} when is_binary(value) and value != "" ->
+              changed(entry, :action, value)
+
+            _ ->
+              entry
           end
         end)
 
@@ -218,11 +228,39 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
     end
   end
 
-  defp shown_tick(_review, %{checked: checked}, _lines, _stock_map) when is_boolean(checked),
-    do: checked
+  # A change of the pack size or of the rule moves the total like a typed
+  # quantity: a tick the person set before it becomes a consent the view
+  # takes back while the row is far below the stock.
+  defp changed(entry, field, value) do
+    if Map.fetch!(entry, field) == value do
+      entry
+    else
+      entry
+      |> Map.put(field, value)
+      |> then(&if(&1.checked == true, do: %{&1 | checked: nil, accepted: true}, else: &1))
+    end
+  end
 
-  defp shown_tick(review, entry, lines, stock_map),
-    do: view_row(review, entry, lines, stock_map).checked
+  # A typed quantity is a person's correction, and so their consent: the row
+  # keeps the tick it showed (`accepted`), a tick the person set included,
+  # and `view/3` takes it back while the row is far below the stock (a
+  # dropped digit, a 0), whatever later changes the total. A row the person
+  # unticked stays unticked; a tick set after the edit stands as it is.
+  defp accept_edit(review, entry, quantity, lines, stock_map) do
+    accepted =
+      cond do
+        is_boolean(entry.checked) -> entry.checked
+        is_boolean(entry.accepted) -> entry.accepted
+        true -> view_row(review, entry, lines, stock_map).checked
+      end
+
+    %{
+      entry
+      | quantity: quantity,
+        checked: if(entry.checked == false, do: false, else: nil),
+        accepted: accepted
+    }
+  end
 
   @doc "Ticks or unticks a row (a row without an item stays unticked)."
   @spec set_checked(t(), pos_integer(), boolean()) :: {:ok, t()} | {:error, :unknown_row}
@@ -354,14 +392,21 @@ defmodule PhoenixKitWarehouse.InventoryAI.Review do
       stock: stock,
       starred?: starred?,
       total: total,
-      checked:
-        not is_nil(entry.item) and
-          if(is_nil(entry.checked), do: default_checked, else: entry.checked),
+      checked: not is_nil(entry.item) and tick(entry, default_checked, reasons),
       default_checked: default_checked,
       reasons: reasons,
       errors: Map.get(review.errors, entry.key, %{})
     }
   end
+
+  # The person's own tick wins; a typed correction keeps the tick it was
+  # made on unless the row is far below the stock; else the default.
+  defp tick(%{checked: checked}, _default, _reasons) when is_boolean(checked), do: checked
+
+  defp tick(%{accepted: accepted}, _default, reasons) when is_boolean(accepted),
+    do: accepted and :sharply_below_stock not in reasons
+
+  defp tick(_entry, default, _reasons), do: default
 
   defp count(%{item: nil}, _proposed),
     do: %{"kind" => "item", "quantity" => nil, "formulas" => []}
