@@ -106,8 +106,11 @@ defmodule PhoenixKitWarehouse.InventoryAI.Counting do
     total = full |> Decimal.add(share) |> Decimal.add(loose || @zero)
 
     formula =
-      "#{format(closed)}×#{format(per_package)} + ⌊#{format(open)}×#{format(per_package)}×#{format(fill)}⌋" <>
-        loose_term(loose) <> " = #{format(total)}"
+      terms([
+        nonzero(closed) && "#{format(closed)}×#{format(per_package)}",
+        nonzero(open) && "⌊#{format(open)}×#{format(per_package)}×#{format(fill)}⌋",
+        nonzero(loose) && format(loose)
+      ]) <> " = #{format(total)}"
 
     {:counted, total, formula}
   end
@@ -118,14 +121,27 @@ defmodule PhoenixKitWarehouse.InventoryAI.Counting do
     total = Decimal.add(packages, loose || @zero)
 
     formula =
-      "#{format(closed)} + #{format(open)}×#{format(fill)}" <>
-        loose_term(loose) <> " = #{format(total)}"
+      terms([
+        nonzero(closed) && format(closed),
+        nonzero(open) && "#{format(open)}×#{format(fill)}",
+        nonzero(loose) && format(loose)
+      ]) <> " = #{format(total)}"
 
     {:counted, total, formula}
   end
 
-  defp loose_term(nil), do: ""
-  defp loose_term(loose), do: " + #{format(loose)}"
+  # The terms of a formula without the zero ones (no open packages, say).
+  # The callers come here only with closed or open packages, so one term is
+  # always there; "0" only guards the join.
+  defp terms(parts) do
+    case Enum.filter(parts, & &1) do
+      [] -> "0"
+      shown -> Enum.join(shown, " + ")
+    end
+  end
+
+  defp nonzero(%Decimal{} = value), do: not Decimal.eq?(value, 0)
+  defp nonzero(_value), do: false
 
   defp positive(%Decimal{} = value), do: if(Decimal.gt?(value, 0), do: value, else: nil)
   defp positive(_value), do: nil
