@@ -37,11 +37,12 @@ defmodule PhoenixKitWarehouse.Web.SupplierOrderFormLive do
 
   alias PhoenixKitWarehouse.Web.Components.{
     CommentsPanel,
-    LineExplanations,
     RelatedDocuments,
     TrashAction,
     WarehouseBrowser
   }
+
+  alias PhoenixKitWarehouse.Web.Components.LineExplanations
 
   alias PhoenixKitWarehouse.Web.TrashActions
   alias PhoenixKitWarehouse.Web.TrashMessages
