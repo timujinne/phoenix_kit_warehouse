@@ -36,8 +36,27 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   alias PhoenixKitWarehouse.StockLedger
   alias PhoenixKitWarehouse.StorageFolders
   alias PhoenixKitWarehouse.SupplierOrders
-  alias PhoenixKitWarehouse.Web.Components.{CommentsPanel, RelatedDocuments, WarehouseBrowser}
+
+  alias PhoenixKitWarehouse.Web.Components.{
+    CommentsPanel,
+    RelatedDocuments,
+    TrashAction,
+    WarehouseBrowser
+  }
+
+  alias PhoenixKitWarehouse.Web.Components.LineExplanations
+
   alias PhoenixKitWarehouse.Web.ItemSelectorScope
+  alias PhoenixKitWarehouse.Web.TrashActions
+  alias PhoenixKitWarehouse.Web.TrashMessages
+
+  # Events that change the document, its links or what is made from it. A
+  # document in the trash answers none of them; the buttons are hidden, this
+  # is for a stale event.
+  @trash_blocked ~w(remove_line set_required_qty save_draft conduct save_correction
+                    generate_supplier_orders issue_to_production open_item_selector
+                    open_source_picker open_link_picker source_picker_confirm
+                    remove_source_ref)
 
   # ---------------------------------------------------------------------------
   # Lifecycle
@@ -82,6 +101,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       |> assign(:source_picker_selected_meta, %{})
       |> assign(:source_picker_query, "")
       |> assign(:source_refs, [])
+      |> assign(:deleted_by_name, nil)
+      |> assign(:trash_candidate, nil)
+      |> assign(:replaceable_drafts, [])
       |> MediaBrowser.setup_uploads()
 
     {:ok, socket}
@@ -177,12 +199,32 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       |> assign(:child_supplier_order_refs, child_supplier_order_refs)
       |> assign(:child_goods_issue_refs, child_goods_issue_refs)
       |> assign(:source_refs, source_refs)
+      |> assign(:deleted_by_name, TrashActions.deleted_by_name(order))
+      |> assign(:replaceable_drafts, replaceable_drafts(order))
       |> assign(
         :page_title,
         dgettext("default", "Internal Order #%{number}", number: order.number)
       )
 
     if same_order?, do: socket, else: assign_edit_buffer(socket, order, locale)
+  end
+
+  # The live supplier-order drafts a generation may send to the trash; only
+  # looked up where the confirmation can use them.
+  defp replaceable_drafts(%{status: "posted", deleted_at: nil, uuid: uuid}) do
+    if PhoenixKitWarehouse.one_draft_per_source?(),
+      do: SupplierOrders.list_replaceable_drafts(uuid),
+      else: []
+  end
+
+  defp replaceable_drafts(_order), do: []
+
+  # Reads the document again, buffer included: what the person had typed is
+  # not what the stored (possibly trashed) document holds.
+  defp reload_order(socket) do
+    socket
+    |> assign(:order, nil)
+    |> load_order_into_socket(socket.assigns.order.uuid, socket.assigns.locale)
   end
 
   defp load_child_supplier_order_refs(internal_order_uuid) do
@@ -206,6 +248,71 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
     case Locations.get_location(location_uuid) do
       nil -> nil
       location -> location.name
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # A document in the trash
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def handle_event(
+        event,
+        _params,
+        %{assigns: %{order: %{deleted_at: %DateTime{}}}} = socket
+      )
+      when event in @trash_blocked,
+      do:
+        {:noreply,
+         TrashActions.refuse_trashed(socket, :order, &reload_order/1, &resume_files_tab/1)}
+
+  # "Move to trash" of the form's own document (TrashActions); the uuid is the
+  # form's, not the browser's. After the move the form is drawn as trashed.
+  @impl true
+  def handle_event("request_trash", _params, %{assigns: %{order: nil}} = socket) do
+    {:noreply, put_flash(socket, :error, TrashMessages.restore_error(:not_found))}
+  end
+
+  def handle_event("request_trash", _params, socket) do
+    {:noreply,
+     TrashActions.request_trash(
+       socket,
+       :internal_order,
+       socket.assigns.order.uuid,
+       &reload_order/1
+     )}
+  end
+
+  def handle_event("confirm_trash", _params, socket),
+    do: {:noreply, TrashActions.confirm_trash(socket, :internal_order, &reload_order/1)}
+
+  def handle_event("cancel_trash", _params, socket),
+    do: {:noreply, TrashActions.cancel_trash(socket)}
+
+  @impl true
+  def handle_event("restore", _params, %{assigns: %{order: nil}} = socket) do
+    {:noreply, put_flash(socket, :error, TrashMessages.restore_error(:not_found))}
+  end
+
+  def handle_event("restore", _params, socket) do
+    order = socket.assigns.order
+    user_uuid = socket.assigns.current_user && socket.assigns.current_user.uuid
+    swap? = PhoenixKitWarehouse.one_draft_per_source?()
+
+    case InternalOrders.restore_internal_order(order, user_uuid, swap: swap?) do
+      {:ok, %{order: restored, superseded: superseded}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, TrashMessages.restored(restored, superseded))
+         |> reload_order()
+         |> resume_files_tab()}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, TrashMessages.restore_error(reason))
+         |> reload_order()
+         |> resume_files_tab()}
     end
   end
 
@@ -373,6 +480,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
         {:noreply, socket}
 
+      {:error, :deleted} ->
+        {:noreply, socket |> assign(:show_source_picker, false) |> trashed_meanwhile()}
+
       {:error, _reason} ->
         {:noreply,
          socket
@@ -408,6 +518,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
         {:noreply, socket}
 
+      {:error, :deleted} ->
+        {:noreply, socket |> assign(:show_source_picker, false) |> trashed_meanwhile()}
+
       {:error, _reason} ->
         {:noreply,
          socket
@@ -428,6 +541,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           |> assign(:source_refs, DocRefs.refs_for(updated_order.source_refs || []))
 
         {:noreply, socket}
+
+      {:error, :deleted} ->
+        {:noreply, trashed_meanwhile(socket)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, dgettext("default", "Failed to remove link"))}
@@ -491,6 +607,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
              |> assign(:order, updated_order)
              |> put_flash(:info, dgettext("default", "Draft saved"))}
 
+          {:error, :deleted} ->
+            {:noreply, trashed_meanwhile(socket)}
+
           {:error, _changeset} ->
             {:noreply, put_flash(socket, :error, dgettext("default", "Failed to save draft"))}
         end
@@ -524,6 +643,9 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
        |> put_flash(:info, dgettext("default", "Internal order conducted"))
        |> push_navigate(to: Routes.path("/admin/warehouse/internal-orders"))}
     else
+      {:error, :deleted} ->
+        {:noreply, trashed_meanwhile(socket)}
+
       {:error, :not_draft} ->
         {:noreply,
          put_flash(socket, :error, dgettext("default", "Document is already conducted"))}
@@ -572,8 +694,10 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
         current_user = socket.assigns.current_user
         user_uuid = current_user && current_user.uuid
 
-        case SupplierOrders.generate_from_internal_order(order, user_uuid) do
-          {:ok, %{supplier_orders: created, unassigned_lines: unassigned}} ->
+        opts = [supersede_drafts: PhoenixKitWarehouse.one_draft_per_source?()]
+
+        case SupplierOrders.generate_from_internal_order(order, user_uuid, opts) do
+          {:ok, %{supplier_orders: created, unassigned_lines: unassigned} = result} ->
             n = length(created)
             m = length(unassigned)
 
@@ -603,7 +727,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
             socket =
               socket
-              |> put_flash(:info, msg)
+              |> put_flash(:info, TrashMessages.append_moved(msg, result.superseded))
               |> push_navigate(to: Routes.path("/admin/warehouse/supplier-orders"))
 
             {:noreply, socket}
@@ -739,7 +863,11 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
     assigns =
       assigns
       |> assign(:posted?, assigns.order && assigns.order.status == "posted")
+      |> assign(:deleted?, !!(assigns.order && assigns.order.deleted_at))
       |> assign(:order_uuid, assigns.order && assigns.order.uuid)
+
+    # Posted and trashed documents are shown, not edited.
+    assigns = assign(assigns, :read_only?, assigns.posted? || assigns.deleted?)
 
     assigns = assign_new(assigns, :sub_order_ref, fn -> nil end)
     assigns = assign_new(assigns, :child_supplier_order_refs, fn -> [] end)
@@ -760,8 +888,13 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
     >
     <div class="flex flex-col mx-auto max-w-none sm:px-4 py-2 sm:py-6 gap-4">
       <div class="flex flex-wrap items-center justify-end gap-2">
+        <TrashAction.trash_button
+          :if={@order && !@deleted?}
+          id_prefix="io"
+          reason={TrashActions.blocked_reason(@order)}
+        />
         <%!-- Draft state: Save draft + Conduct --%>
-        <%= if !@posted? and @active_tab in [:general, :items] do %>
+        <%= if !@read_only? and @active_tab in [:general, :items] do %>
           <button
             type="button"
             phx-click="save_draft"
@@ -778,7 +911,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           </button>
         <% end %>
         <%!-- Posted + admin: note correction + badge --%>
-        <%= if @posted? and @admin? and @active_tab == :general do %>
+        <%= if @posted? and not @deleted? and @admin? and @active_tab == :general do %>
           <button
             type="button"
             phx-click="save_correction"
@@ -792,10 +925,12 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           <span class="badge badge-success badge-lg">{dgettext("default", "Conducted")}</span>
         <% end %>
         <%!-- Generate supplier orders (posted only) --%>
-        <%= if @posted? do %>
+        <%= if @posted? and not @deleted? do %>
           <button
             type="button"
+            id="io-generate-supplier-orders"
             phx-click="generate_supplier_orders"
+            data-confirm={confirm_generation(@replaceable_drafts)}
             class="btn btn-secondary btn-sm"
           >
             <.icon name="hero-truck" class="w-4 h-4" /> {dgettext(
@@ -805,7 +940,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           </button>
         <% end %>
         <%!-- Issue to production (posted only) --%>
-        <%= if @posted? do %>
+        <%= if @posted? and not @deleted? do %>
           <button
             type="button"
             phx-click="issue_to_production"
@@ -835,7 +970,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           {dgettext("default", "Items")}
         </.link>
         <.link
-          :if={@order_uuid}
+          :if={@order_uuid && !@deleted?}
           patch={Routes.path("/admin/warehouse/internal-orders/#{@order_uuid}/files")}
           class={["tab", @active_tab == :files && "tab-active"]}
         >
@@ -853,6 +988,14 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
         </.link>
       </div>
 
+      <%!-- Trashed document: say so, offer the way back (drafts only) --%>
+      <TrashAction.trash_banner
+        :if={@deleted?}
+        id_prefix="io"
+        document={@order}
+        deleted_by={@deleted_by_name}
+      />
+
       <%!-- Posted info banner (non-admin only) --%>
       <%= if @posted? and not @admin? do %>
         <div class="alert alert-success">
@@ -863,7 +1006,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
       <%!-- Tab: General --%>
       <%= if @active_tab == :general do %>
-        <%= if !@posted? do %>
+        <%= if !@read_only? do %>
           <div class="card bg-base-100 shadow-sm">
             <div class="card-body p-4 flex flex-col gap-3">
               <div>
@@ -949,7 +1092,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
                     </dd>
                   </div>
                 <% end %>
-                <%= if @order.note && @posted? do %>
+                <%= if @order.note && @read_only? do %>
                   <div>
                     <dt class="text-base-content/60 font-medium">
                       {dgettext("default", "Note")}
@@ -964,9 +1107,10 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
                 downstream={@child_supplier_order_refs ++ @child_goods_issue_refs}
                 upstream_label={dgettext("default", "Imported from")}
                 downstream_label={dgettext("default", "Related documents")}
+                read_only={@deleted?}
               />
               <%!-- Note edit on posted doc (admin only) --%>
-              <%= if @posted? and @admin? do %>
+              <%= if @posted? and not @deleted? and @admin? do %>
                 <div class="divider my-1"></div>
                 <div class="text-sm">
                   <label class="text-base-content/60 font-medium block mb-1">
@@ -1001,7 +1145,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
                   <span class="loading loading-spinner loading-md" />
                   <span class="ml-2">{dgettext("default", "Loading files...")}</span>
                 </div>
-              <% is_nil(@files_scope_folder_uuid) -> %>
+              <% @deleted? or is_nil(@files_scope_folder_uuid) -> %>
                 <div class="alert alert-warning">
                   {dgettext("default", "Files are not available for this internal order yet.")}
                 </div>
@@ -1047,7 +1191,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           <div class="card-body p-4">
             <div class="flex items-center justify-between gap-2 mb-2">
               <h2 class="card-title text-base">{dgettext("default", "Items")}</h2>
-              <%= if !@posted? do %>
+              <%= if !@read_only? do %>
                 <div class="flex items-center gap-2">
                   <button
                     type="button"
@@ -1067,8 +1211,13 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
             <.internal_order_lines_table
               lines={@lines}
               names={@names}
-              posted?={@posted?}
+              posted?={@read_only?}
               locale={@locale}
+            />
+            <LineExplanations.explanations
+              id="internal-order-explanations"
+              lines={@lines}
+              names={@names}
             />
           </div>
         </div>
@@ -1082,6 +1231,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
           selected={selected_items(@lines)}
           locale={@locale}
           qty_precision={6}
+          include_internal={true}
           show_tray={true}
         />
       <% end %>
@@ -1096,9 +1246,23 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
         selected_uuids={@source_picker_selected}
         search_query={@source_picker_query}
       />
+
+      <TrashAction.trash_confirm id_prefix="io" candidate={@trash_candidate} form />
     </div>
     </PhoenixKitWeb.Components.LayoutWrapper.app_layout>
     """
+  end
+
+  # The generation may send live supplier-order drafts of the same suppliers
+  # to the trash (only with `:one_draft_per_source`); name them first.
+  defp confirm_generation([]), do: nil
+
+  defp confirm_generation(drafts) do
+    dgettext(
+      "default",
+      "Draft supplier orders %{numbers} for the same suppliers may be moved to the trash. Continue?",
+      numbers: Enum.map_join(drafts, ", ", &TrashMessages.tag/1)
+    )
   end
 
   defp picker_title(:import), do: dgettext("default", "Import from order")
@@ -1196,9 +1360,17 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   # File folder resolution
   # ---------------------------------------------------------------------------
 
+  # The Files tab skipped the folder lookup while the document was in the
+  # trash; a restore makes up for it, so the tab does not stay empty.
+  defp resume_files_tab(socket),
+    do: TrashActions.resume_files_tab(socket, &maybe_start_files_folder_resolution/1)
+
   defp maybe_start_files_folder_resolution(socket) do
     cond do
       not is_nil(socket.assigns.files_scope_folder_uuid) ->
+        socket
+
+      socket.assigns.order.deleted_at != nil ->
         socket
 
       not connected?(socket) ->
@@ -1299,6 +1471,10 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       {item.uuid, WarehouseBrowser.localized_name(item, locale)}
     end)
   end
+
+  # The save found the document in the trash (someone replaced it meanwhile):
+  # say so and draw the stored document, not the unsaved buffer.
+  defp trashed_meanwhile(socket), do: TrashActions.trashed_meanwhile(socket, &reload_order/1)
 
   defp ensure_saved(%PhoenixKitWarehouse.InternalOrder{status: "draft"} = order, attrs) do
     InternalOrders.update_draft(order, attrs)

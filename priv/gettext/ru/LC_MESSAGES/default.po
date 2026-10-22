@@ -1063,6 +1063,110 @@ msgstr "Остаток"
 msgid "Only posted internal orders can create goods issues"
 msgstr "Создавать выдачи можно только из проведённых внутренних заказов"
 
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:38
+#, elixir-autogen, elixir-format
+msgid "Restored from the trash: %{document}."
+msgstr "Восстановлено из корзины: %{document}."
+
+#: lib/phoenix_kit_warehouse/web/components/trash_tabs.ex:29
+#, elixir-autogen, elixir-format
+msgid "Active"
+msgstr "Активные"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:460
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:648
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:460
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:650
+#, elixir-autogen, elixir-format
+msgid "Deleted"
+msgstr "Удалён"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:463
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:649
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:463
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:651
+#, elixir-autogen, elixir-format
+msgid "Deleted by"
+msgstr "Кто удалил"
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:38
+#, elixir-autogen, elixir-format
+msgid "Document moved to the trash"
+msgstr "Документ перемещён в корзину"
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:34
+#, elixir-autogen, elixir-format
+msgid "Document not found"
+msgstr "Документ не найден"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_form_live.ex:1212
+#, elixir-autogen, elixir-format
+msgid "Draft supplier orders %{numbers} for the same suppliers may be moved to the trash. Continue?"
+msgstr "Черновики заказов поставщику %{numbers} для тех же поставщиков могут быть перемещены в корзину. Продолжить?"
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:35
+#, elixir-autogen, elixir-format
+msgid "Failed to restore the document"
+msgstr "Не удалось восстановить документ"
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:27
+#, elixir-autogen, elixir-format
+msgid "Moved to the trash: %{numbers}."
+msgstr "Перемещены в корзину: %{numbers}."
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:62
+#, elixir-autogen, elixir-format
+msgid "Goods issues exceed the order for: %{numbers} — check the lines."
+msgstr "Выдачи превышают заказ по: %{numbers} — проверьте строки."
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:33
+#, elixir-autogen, elixir-format
+msgid "Only drafts can be restored"
+msgstr "Восстановить можно только черновики"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:515
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:515
+#, elixir-autogen, elixir-format
+msgid "Open"
+msgstr "Открыть"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_form_live.ex:954
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:525
+#: lib/phoenix_kit_warehouse/web/supplier_order_form_live.ex:942
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:525
+#, elixir-autogen, elixir-format
+msgid "Restore"
+msgstr "Восстановить"
+
+#: lib/phoenix_kit_warehouse/web/internal_order_form_live.ex:978
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:533
+#: lib/phoenix_kit_warehouse/web/supplier_order_form_live.ex:973
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:533
+#, elixir-autogen, elixir-format
+msgid "Restoring..."
+msgstr "Восстановление..."
+
+#: lib/phoenix_kit_warehouse/web/internal_order_index_live.ex:480
+#: lib/phoenix_kit_warehouse/web/supplier_order_index_live.ex:480
+#, elixir-autogen, elixir-format
+msgid "The trash is empty"
+msgstr "Корзина пуста"
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:42
+#, elixir-autogen, elixir-format
+msgid "This document is in the trash (deleted %{date} by %{user})."
+msgstr "Документ в корзине (удалён %{date}, удалил: %{user})."
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:32
+#, elixir-autogen, elixir-format
+msgid "This document is not in the trash"
+msgstr "Документ не в корзине"
+
+#: lib/phoenix_kit_warehouse/web/components/trash_tabs.ex:40
+#, elixir-autogen, elixir-format
+msgid "Trash (%{count})"
+msgstr "Корзина (%{count})"
+
 #: lib/phoenix_kit_warehouse/web/internal_order_form_live.ex:614
 #, elixir-autogen, elixir-format
 msgid "Only posted internal orders can generate supplier orders"
@@ -2019,3 +2123,77 @@ msgstr "Сначала укажите склад по умолчанию в на
 #, elixir-autogen, elixir-format
 msgid "External ref %{ref} is already used by a posted goods issue."
 msgstr "Внешняя ссылка %{ref} уже используется проведённой выдачей."
+
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:125
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:140
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:164
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:49
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:69
+#, elixir-autogen, elixir-format
+msgid "Move to trash"
+msgstr "В корзину"
+
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:162
+#, elixir-autogen, elixir-format
+msgid "Move to the trash?"
+msgstr "Переместить в корзину?"
+
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:170
+#, elixir-autogen, elixir-format
+msgid "Move to the trash: %{document}. The document can be restored on the Trash tab."
+msgstr "В корзину: %{document}. Документ можно восстановить на вкладке «Корзина»."
+
+#: lib/phoenix_kit_warehouse/web/components/trash_action.ex:166
+#, elixir-autogen, elixir-format
+msgid "Unsaved changes in the form will not be saved."
+msgstr "Несохранённые изменения формы не сохранятся."
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:34
+#, elixir-autogen, elixir-format
+msgid "Moved to the trash: %{document}."
+msgstr "Перемещено в корзину: %{document}."
+
+#: lib/phoenix_kit_warehouse/web/trash_messages.ex:30
+#, elixir-autogen, elixir-format
+msgid "Inventory #%{number}"
+msgstr "Инвентаризация #%{number}"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:235
+#, elixir-autogen, elixir-format
+msgid "The document is already in the trash"
+msgstr "Документ уже в корзине"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:236
+#, elixir-autogen, elixir-format
+msgid "This document cannot be deleted"
+msgstr "Этот документ нельзя удалить"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:149
+#, elixir-autogen, elixir-format
+msgid "A posted document cannot be deleted"
+msgstr "Проведённый документ нельзя удалить"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:152
+#, elixir-autogen, elixir-format
+msgid "A transfer in transit cannot be deleted — cancel it first"
+msgstr "Перемещение в пути нельзя удалить — сначала отмените его"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:155
+#, elixir-autogen, elixir-format
+msgid "A completed transfer cannot be deleted"
+msgstr "Выполненное перемещение нельзя удалить"
+
+#: lib/phoenix_kit_warehouse/web/trash_actions.ex:158
+#, elixir-autogen, elixir-format
+msgid "A cancelled transfer cannot be deleted"
+msgstr "Отменённое перемещение нельзя удалить"
+
+#: lib/phoenix_kit_warehouse/web/components/line_explanations.ex:29
+#, elixir-autogen, elixir-format
+msgid "Why"
+msgstr "Почему"
+
+#: lib/phoenix_kit_warehouse/web/components/line_explanations.ex:33
+#, elixir-autogen, elixir-format
+msgid "The order is the requirement of the internal order minus the stock on hand at the warehouse location at the moment of generation. On import, the quantity already ordered in other supplier orders is subtracted as well. The supplier is the one found for the item: the primary supplier or one through the manufacturer. Items without a single supplier do not get into this order. If the quantity in the order was edited by hand, it may differ from the calculation."
+msgstr "Заказ — это потребность по внутреннему заказу минус остаток на складской локации на момент формирования. При импорте из внутреннего заказа дополнительно вычитается количество этой позиции, уже заказанное в других заказах поставщику. Поставщик — найденный для позиции: основной поставщик или поставщик через производителя. Позиции без единственного поставщика в этот заказ не попадают. Если количество в заказе правили вручную, оно может отличаться от расчёта."

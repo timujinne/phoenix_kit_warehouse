@@ -48,6 +48,63 @@ Posting semantics worth knowing:
 - After posting, a goods receipt or goods issue keeps its lines; only the note
   and the storage folder can still be corrected.
 
+### Drafts, the trash and one draft per source
+
+Every warehouse document (internal order, supplier order, goods receipt, goods
+issue, stocktake, transfer) that is a **draft** can be moved to the **trash** (a
+soft delete, `deleted_at`): *Move to trash* in the row menu of its list (the
+card view too) and in its form, after a confirmation. A document that may not
+go shows the item and the button disabled, with the reason (posted; for a
+transfer: in transit, done or cancelled). The lists have an *Active / Trash (N)*
+tab pair (`?view=trash`; the Trash tab shows while it holds something) with the
+deletion date and who deleted the document, and a *Restore* action for drafts.
+A trashed document opens read-only with a banner; editing, posting, links,
+correction, the storage folder and the documents made from it are unavailable.
+A posted document is never moved to the trash by the module and cannot be
+restored from it (legacy rows stay where they are). Saving or posting a
+document that was trashed meanwhile answers `{:error, :deleted}` (the forms
+show a flash). A trashed goods issue holds none of its internal orders, so
+another issue may import them meanwhile; restoring it is not refused, and the
+flash names the internal orders the issues now exceed
+(`GoodsIssues.overcommitted_internal_orders/1`).
+
+For a draft transfer, *Cancel* and *Move to trash* differ: *Cancel* closes it
+for good as a `cancelled` transfer that stays in the list, *Move to trash* hides
+the draft and *Restore* brings it back as a draft. A transfer in transit is
+cancelled (which credits the stock back to the source), not trashed. A transfer
+in transit that older code moved to the trash can still be received or
+cancelled, so its goods do not stay on the road.
+
+Hosts that want **one draft per source** use these functions:
+
+- `InternalOrders.replace_draft_for_source/3` creates a draft and sends the
+  live drafts whose only source is the same `{type, uuid}` to the trash in one
+  transaction. Posted documents, combined drafts (several sources) and other
+  sources are never touched. `InternalOrders.list_for_source/2` and
+  `multi_source?/1` help a host show what exists.
+- `SupplierOrders.generate_from_internal_order/3` takes `supersede_drafts: true`:
+  the live drafts of the same (internal order, supplier) pair, other than the
+  new ones, go to the trash. Drafts of suppliers the generation made nothing
+  for, posted ones and imported ones that refer to another internal order stay.
+- `restore_internal_order/3` and `restore_supplier_order/3` bring a trashed
+  draft back; with `swap: true` the live one-source drafts of its source (pair)
+  go to the trash, so the rule holds after the restore too.
+
+All of this is opt-in by call; without it the module behaves as before. The
+admin UI follows one switch, off by default:
+
+```elixir
+config :phoenix_kit_warehouse, one_draft_per_source: true
+```
+
+With it on, *Generate supplier orders* passes `supersede_drafts: true` (the
+button asks for confirmation when live drafts could be moved, and the flash
+names the ones that were), and *Restore* passes `swap: true`. Moves to the
+trash and back are logged as `warehouse.<kind>.trashed|restored` activities
+(`internal_order`, `supplier_order`, `goods_receipt`, `goods_issue`,
+`inventory`, `transfer`; after the transaction commits, subject to
+`:inventory_activity_logging`).
+
 ### Programmatic posting
 
 For callers that are not a person at a form (a shop, a POS, an integration),
@@ -66,6 +123,10 @@ posting) rolls the draft back too, but the number sequence has advanced.
   and a repeat returns `{:ok, :already_posted, existing_document}` without
   writing anything, so a retried delivery is harmless. The lines of the repeat
   are not compared with the existing document's.
+- `Inventories.create_and_post/3` takes `skip_unchanged: true`: a stocktake
+  where every counted line already holds its quantity returns
+  `{:error, :unchanged}` and writes nothing, so its `external_ref` is not
+  recorded either and a later call with it runs as a new stocktake.
 
 ### Linking documents to host records
 
@@ -119,8 +180,10 @@ How they behave, in short:
   `confirm_token`, the same call with the token posts it. This holds for a retry of a
   posted `external_ref` too.
 - `dry_run: true` (a control field every write tool takes) answers what the call would
-  do (`would_post`, `would_skip`, or the same refusal a real call gives) and writes
-  nothing. A stocktake is worth previewing: the `from` of each line is the current stock.
+  do (`would_post`, `would_skip`, `unchanged` for a stocktake that changes nothing, or
+  the same refusal a real call gives) and writes nothing. A stocktake is worth
+  previewing: the `from` of each line is the current stock. A preview that answers
+  `unchanged` has nothing to confirm: the confirmed call would post no document either.
 - Every posted line answers the stock before (`from`) and after (`to`). A confirmation
   code is bound to what the preview showed, including the current stock of every
   line: any other document that moves one of those products before the code is used
@@ -130,8 +193,15 @@ How they behave, in short:
   of 1 second; nothing was changed and the same call can be sent again. A call that
   carried a confirmation code (above the confirmation threshold) has spent it: send it
   again without the code.
+- `set_stock` that changes nothing (every listed product already holds its counted
+  quantity) creates no document and burns no document number: it answers
+  `status: "unchanged"` with the `results` (`action: "unchanged"`) and no `document`.
+  A stocktake where at least one line changes is posted whole. After an `unchanged`
+  answer the `external_ref` is not recorded (there is no document), so a later call with
+  the same reference runs normally; use `Idempotency-Key` for replays.
 - `external_ref` carries your own document number: sending it again answers
-  `skipped` with the existing document and moves no stock. On `issue_stock`
+  `skipped` with the existing document and moves no stock (for a posted document;
+  an `unchanged` `set_stock` posts none, see above). On `issue_stock`
   `source: {"kind": "external", "ref": ...}` is the same reference (do not send both).
   The retry is answered from the posted document before the lines are checked (a
   product trashed or a default warehouse changed since does not matter). What a retry
