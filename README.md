@@ -50,15 +50,30 @@ Posting semantics worth knowing:
 
 ### Drafts, the trash and one draft per source
 
-A draft internal order or supplier order that is deleted goes to the **trash**
-(a soft delete, `deleted_at`). The lists have an *Active / Trash (N)* tab pair
-(`?view=trash`; the Trash tab shows while it holds something) with the deletion
-date and who deleted the document, and a *Restore* action for drafts. A trashed
-document opens read-only with a banner; editing, posting, links, correction,
-the storage folder and the documents made from it are unavailable. A posted
-document is never moved to the trash by the module and cannot be restored from
-it (legacy rows stay where they are). Saving or posting a document that was
-trashed meanwhile answers `{:error, :deleted}` (the forms show a flash).
+Every warehouse document (internal order, supplier order, goods receipt, goods
+issue, stocktake, transfer) that is a **draft** can be moved to the **trash** (a
+soft delete, `deleted_at`): *Move to trash* in the row menu of its list (the
+card view too) and in its form, after a confirmation. A document that may not
+go shows the item and the button disabled, with the reason (posted; for a
+transfer: in transit, done or cancelled). The lists have an *Active / Trash (N)*
+tab pair (`?view=trash`; the Trash tab shows while it holds something) with the
+deletion date and who deleted the document, and a *Restore* action for drafts.
+A trashed document opens read-only with a banner; editing, posting, links,
+correction, the storage folder and the documents made from it are unavailable.
+A posted document is never moved to the trash by the module and cannot be
+restored from it (legacy rows stay where they are). Saving or posting a
+document that was trashed meanwhile answers `{:error, :deleted}` (the forms
+show a flash). A trashed goods issue holds none of its internal orders, so
+another issue may import them meanwhile; restoring it is not refused, and the
+flash names the internal orders the issues now exceed
+(`GoodsIssues.overcommitted_internal_orders/1`).
+
+For a draft transfer, *Cancel* and *Move to trash* differ: *Cancel* closes it
+for good as a `cancelled` transfer that stays in the list, *Move to trash* hides
+the draft and *Restore* brings it back as a draft. A transfer in transit is
+cancelled (which credits the stock back to the source), not trashed. A transfer
+in transit that older code moved to the trash can still be received or
+cancelled, so its goods do not stay on the road.
 
 Hosts that want **one draft per source** use these functions:
 
@@ -67,27 +82,102 @@ Hosts that want **one draft per source** use these functions:
   transaction. Posted documents, combined drafts (several sources) and other
   sources are never touched. `InternalOrders.list_for_source/2` and
   `multi_source?/1` help a host show what exists.
-- `SupplierOrders.generate_from_internal_order/3` takes `supersede_drafts: true`:
-  the live drafts of the same (internal order, supplier) pair, other than the
-  new ones, go to the trash. Drafts of suppliers the generation made nothing
-  for, posted ones and imported ones that refer to another internal order stay.
+- `SupplierOrders.generate_from_internal_order/3` (and `apply_plan/5`, which
+  writes a plan a person has seen) always keeps one draft per (internal order,
+  supplier): what is still missing is appended to the live draft the supplier
+  already has for the internal order - a draft of this order alone, else a
+  combined draft that refers to it, the one with the highest number - and a
+  new draft is made only when there is none. Nothing goes to the trash; the
+  old `supersede_drafts: true` option is accepted and does nothing. The quantity
+  appended is what the internal order needs minus what was issued for it,
+  what is on hand and what its live supplier orders already bring, so a line
+  the keeper reduced or removed is offered again; the keeper's other edits
+  and the note stay.
 - `restore_internal_order/3` and `restore_supplier_order/3` bring a trashed
   draft back; with `swap: true` the live one-source drafts of its source (pair)
   go to the trash, so the rule holds after the restore too.
 
-All of this is opt-in by call; without it the module behaves as before. The
-admin UI follows one switch, off by default:
+The restore swap is opt-in by call. The admin UI follows one switch, off by
+default:
 
 ```elixir
 config :phoenix_kit_warehouse, one_draft_per_source: true
 ```
 
-With it on, *Generate supplier orders* passes `supersede_drafts: true` (the
-button asks for confirmation when live drafts could be moved, and the flash
-names the ones that were), and *Restore* passes `swap: true`. Moves to the
-trash and back are logged as `warehouse.internal_order.trashed|restored` and
-`warehouse.supplier_order.trashed|restored` activities (after the transaction
-commits, subject to `:inventory_activity_logging`).
+With it on, *Restore* passes `swap: true`. Moves to the
+trash and back are logged as `warehouse.<kind>.trashed|restored` activities
+(`internal_order`, `supplier_order`, `goods_receipt`, `goods_issue`,
+`inventory`, `transfer`; after the transaction commits, subject to
+`:inventory_activity_logging`).
+
+### Supplier orders from an internal order
+
+*Generate supplier orders* on a posted internal order opens a preview first
+and writes nothing until *Generate* is pressed. The window is drawn from the
+plan (`SupplierOrders.plan_from_internal_order/2`) and `assemble/2`, so it
+shows exactly what will be written:
+
+- the supplier groups - a new order, or the live draft the supplier already
+  has for this internal order, with the warning that what is missing will be
+  added to it and, per line, "now N → N+k" in that draft;
+- per line the item, SKU, required, issued, on hand, already ordered and to
+  order, the reason for its supplier (primary supplier of the item, the only
+  supplier of the item, the only supplier of the manufacturer, chosen by
+  hand) and a *Why* with the line's explanation (its comment);
+- the lines without a supplier or with several: a supplier is chosen per line
+  or for all ticked lines at once (candidates of the item first, then every
+  active supplier; the default is not to order); any automatic supplier can be
+  replaced as well. A choice is for this generation only. Such a line whose
+  item already lies in a live draft of this internal order with an active
+  supplier is preselected to that supplier ("as in `#SO-…`"; of several such
+  drafts, a draft of this order alone, then the highest number), so the
+  missing rest goes into that draft - also when `generate_from_internal_order/3`
+  runs without the window; "do not order" or another supplier can still be
+  chosen;
+- the lines with nothing to order, with the reason (issued, covered by stock,
+  already ordered in `#SO-…`, item not in the catalogue).
+
+*Generate* calls `SupplierOrders.apply_plan/5` with the plan's fingerprint and
+the choices. When anything the plan decides on changed meanwhile (stock,
+supplier links, the supplier orders of the internal order, an active
+supplier), nothing is written and the window shows the new plan with the
+message to check and press again; a choice is kept when its line still allows
+it, the other lines are marked as changed. A second press of a plan already
+written is such a stale plan, so it writes nothing twice.
+
+One document per supplier: what is missing is appended to the supplier's
+live draft for the internal order (see above), never as a second draft, and
+nothing is moved to the trash. The quantity of a line is
+
+    to order = required - issued for this internal order - on hand at its
+               location - already ordered for it
+
+where *already ordered* is what its live supplier orders still bring: a draft
+counts its lines, a posted order what it has not delivered yet
+(`ordered - received`), a combined order the share its `source_refs` give this
+internal order. A line the keeper reduced or removed from the draft is
+therefore offered again by the next generation. Not counted: reservations of
+other internal orders and `min_stock`; a receipt to another location still
+counts as delivered.
+
+Generated supplier orders carry a `source_refs` entry to the internal order
+with the ordered quantities per item, so the supplier order form shows them
+under *Source documents* and an import from internal orders subtracts them.
+The import does not subtract what was issued for the internal order, so
+importing it into a draft generated from it orders the issued quantity again.
+When that ref is removed, a generation still counts the supplier order for
+the internal order by `internal_order_uuid`, by its actual lines.
+
+A supplier that is a CRM company in the catalogue is matched to the local
+supplier row projecting it (`crm_company_uuid`); a link that resolves to no
+local, active supplier is no candidate.
+
+The supplier order form writes a draft only if it is still the version the
+form loaded (`SupplierOrders.draft_version/1`, the `expected_version:` option
+of `update_draft/3`, `post_supplier_order/3`, `add_source_ref/4`,
+`remove_source_ref/4` and `import_from_internal_orders/4`): a draft a
+generation appended to meanwhile answers `{:error, :stale}`, and the form
+shows the current version instead of overwriting the appended lines.
 
 ### Programmatic posting
 
@@ -234,11 +324,66 @@ How they behave, in short:
 - The tools follow this module's own enabled state, not the shop's "Stock tracking"
   switch.
 
+### Photo inventory (AI)
+
+In a draft stocktake a person can count from photos: **Count from photos** on
+the Items tab uploads the photos of one place (one upload is one batch of one
+place, up to `warehouse_inventory_ai_max_photos`, 10 by default, at most 20 MB
+each, HEIC included), the AI proposes the catalogue items it sees and how many
+(pieces counted where they can be seen, as in a transparent bag; closed
+packages and their fill turned into the item's unit; an item kept in packs
+counted in packs, never in pieces), and the person reviews
+the proposal as a table, corrects it and applies the ticked rows. **Nothing is
+written to the lines without Apply**; the document stays a draft and is
+conducted as usual. What the module does around that:
+
+- **Where it runs.** The call goes through `phoenix_kit_ai`
+  (`PhoenixKitAI.describe_image/3`, one call per batch, in a background task
+  that writes its answer itself, so a closed page loses nothing). The button
+  shows only while the ai module is on, an endpoint is chosen in the warehouse
+  settings and the person may edit the draft (the `warehouse` permission, or an
+  Owner/Admin). Choosing the endpoint is choosing where money goes: the settings
+  block is shown to, and saved by, a holder of the `ai` permission or an
+  administrator only. The money limits are ai's.
+- **Time and cost.** One batch is one vision call: the photos and the whole
+  live catalogue in, the counted objects out. Measured on a catalogue of about
+  600 items with a Gemini Flash model through OpenRouter: 33-75 seconds and
+  about $0.04-0.07 per batch; most of the time goes on the model's output with
+  its reasoning. Narrowing a batch to some catalogues makes it cheaper.
+- **Settings** (`PhoenixKit.Settings`): `warehouse_inventory_ai_endpoint_uuid`
+  (empty: no button), `warehouse_inventory_ai_prompt_uuid` (the module's own
+  prompt in the ai prompts, made on first use; a prompt edited by hand is never
+  overwritten), `warehouse_inventory_ai_max_photos` and
+  `warehouse_inventory_ai_max_items` (3000 by default: the whole live catalogue
+  goes into the request, and past this many items a person narrows it to some
+  catalogues first).
+- **The photos** are stored in the stocktake's own Storage folder (visible on
+  its Files tab) and leave the system for the AI provider: the panel says to
+  photograph shelves, not people.
+- **The runs** are kept in `phoenix_kit_warehouse_inventory_ai_runs` (chain
+  version 3): the photos, the place, the model, the checked answer, what was
+  applied and by whom. One run per document reads at a time; a failed one can
+  be retried on the same photos; an answer that comes after a run was closed is
+  kept and shown only on request. Changing the warehouse of the stocktake or
+  conducting it closes its open runs.
+- **The lines** carry who gave each number - `"counted_by"`: `"stock"` (seeded),
+  `"manual"` (typed or added by a person), `"ai"` (applied from photos) - and,
+  for the photo counts, the part of each place (`"ai_parts"`), so that a place
+  photographed again replaces its own part while another place adds to it; lines
+  no photo saw are not touched. Posting keeps these keys.
+- **Two tabs.** Every write of the lines from the stocktake page (Save draft,
+  Apply, Conduct, the warehouse change) passes the fingerprint of the warehouse
+  and lines the tab started from: a tab whose warehouse or lines another tab
+  has changed is refused instead of silently writing over them.
+  `Inventories.update_draft/3` checks it only when called with
+  `base_fingerprint:`; without the option it behaves as before.
+
 ### Other modules
 
 Requires `phoenix_kit_catalogue` (the items), `phoenix_kit_locations` (the
-warehouses), `phoenix_kit_billing` (currency formatting) and
-`phoenix_kit_comments` (document comment threads). A plan source for core's
+warehouses), `phoenix_kit_billing` (currency formatting),
+`phoenix_kit_comments` (document comment threads) and `phoenix_kit_ai` (the
+photo inventory; without the ai module switched on there is simply no button). A plan source for core's
 `mix phoenix_kit.media.reorganize` is included.
 
 ## Installation
@@ -260,7 +405,7 @@ mix phoenix_kit.update
 ### Removing this module
 
 There is deliberately **no automated uninstall**.
-`PhoenixKitWarehouse.Migrations.down/1` never drops any of the 8
+`PhoenixKitWarehouse.Migrations.down/1` never drops any of its
 `phoenix_kit_warehouse_*` tables or a row in them, for any target version —
 a host that merely removes this dependency from `mix.exs` has not consented
 to deleting live stock balances and document history, and a migration
@@ -272,6 +417,8 @@ step, in FK-safe order (children before parents):
 ```sql
 -- Only after removing :phoenix_kit_warehouse from mix.exs, and only if you
 -- actually want every stock balance and document gone for good.
+-- The runs of the photo inventory first: they reference the inventory documents.
+DROP TABLE phoenix_kit_warehouse_inventory_ai_runs;
 DROP TABLE phoenix_kit_warehouse_goods_issues;
 DROP TABLE phoenix_kit_warehouse_goods_receipts;
 DROP TABLE phoenix_kit_warehouse_supplier_orders;

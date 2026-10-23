@@ -4,8 +4,8 @@ defmodule PhoenixKitWarehouse do
   cancel reverse-posting, deficit control with min-stock settings, turnover
   report, internal orders, supplier orders, goods receipts, and goods issues.
 
-  All four sibling packages are hard dependencies in `mix.exs` — none is
-  declared `optional:`, so all four are always compiled in:
+  All five sibling packages are hard dependencies in `mix.exs` — none is
+  declared `optional:`, so all five are always compiled in:
 
     * `phoenix_kit_catalogue` — warehouse only ever tracks catalogue items.
     * `phoenix_kit_locations` — every document carries a `location_uuid`
@@ -16,6 +16,11 @@ defmodule PhoenixKitWarehouse do
       PhoenixKitComments.Embed`. A `use` is macro expansion at compile time,
       so this one can be neither guarded nor made optional; that is why
       `mix.exs` floors it at 0.2.8 rather than 0.2.
+    * `phoenix_kit_ai` — the photo inventory (`PhoenixKitWarehouse.InventoryAI.*`:
+      settings, prompt, task-guard seams). The package is always compiled in,
+      but its PhoenixKit module (`"ai"`) is not in `required_modules/0`: without
+      it the inventory button is simply not shown, and the settings block is
+      shown only to a holder of `"ai"` or an administrator.
 
   A hard *package* dependency is not the same thing as a required *module*.
   `required_modules/0` lists only `"catalogue"` and `"locations"` — the two
@@ -35,12 +40,13 @@ defmodule PhoenixKitWarehouse do
   ## Configuration
 
     * `config :phoenix_kit_warehouse, one_draft_per_source: true` (default
-      `false`) - the admin UI keeps one draft per source: generating supplier
-      orders from an internal order sends the live drafts of the same supplier
-      to the trash, and restoring a draft from the trash sends the live drafts
-      of its source (pair) there. Documents can always be restored from the
-      "Trash" tab of the internal and supplier order lists; the setting only
-      adds the replacement. See `one_draft_per_source?/0`.
+      `false`) - restoring a draft from the trash in the admin UI sends the
+      live drafts of its source (pair) there. Generating supplier orders from
+      an internal order keeps one draft per (internal order, supplier) with or
+      without it: what is missing is appended to the live draft, nothing goes
+      to the trash. Documents can always be restored from the "Trash" tab of
+      the internal and supplier order lists; the setting only adds the
+      replacement on restore. See `one_draft_per_source?/0`.
   """
 
   use PhoenixKit.Module
@@ -153,6 +159,12 @@ defmodule PhoenixKitWarehouse do
   # `@impl` would warn. `ModuleRegistry.all_media_reorganizers/0` looks the
   # function up by name, so it is collected on any core that ships the engine.
   def media_reorganizer, do: PhoenixKitWarehouse.MediaReorganizer
+
+  # `ai_tasks/0`, the callback the phoenix_kit_ai task guard collects from
+  # the registered modules by name (as `media_reorganizer/0` above): the AI
+  # tasks this module declares. No `@impl` - core has no such callback yet.
+  # `[]` while the ai this is built against has no `PhoenixKitAI.TaskSpec`.
+  defdelegate ai_tasks, to: PhoenixKitWarehouse.InventoryAI.Guard
 
   @impl PhoenixKit.Module
   def children, do: [{Task.Supervisor, name: PhoenixKitWarehouse.TaskSupervisor}]

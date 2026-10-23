@@ -9,6 +9,8 @@ defmodule PhoenixKitWarehouse.Inventories do
   import Ecto.Query
 
   alias PhoenixKitCatalogue.Catalogue
+  alias PhoenixKitWarehouse.ActivityLog
+  alias PhoenixKitWarehouse.DraftTrash
   alias PhoenixKitWarehouse.InventoryDocument
   alias PhoenixKitWarehouse.PostingSupport
   alias PhoenixKitWarehouse.Stock
@@ -42,6 +44,10 @@ defmodule PhoenixKitWarehouse.Inventories do
   `PhoenixKitCatalogue.Catalogue.list_items_by_uuids/2` then filters
   `status == "active"` in Elixir (that function only excludes
   soft-deleted/status="deleted" items, so inactive/discontinued slip through).
+
+  Each line is marked as seeded: `"counted_by" => "stock"`, with the stock it
+  was seeded from in `"seeded_quantity"` - a seeded number is not a count,
+  and the photo inventory replaces it rather than adding to it.
   """
   def seed_lines(locale, location_uuid) do
     stock_map = StockLedger.stock_map_for_location(location_uuid)
@@ -77,7 +83,9 @@ defmodule PhoenixKitWarehouse.Inventories do
                 "catalogue_uuid" => item.catalogue_uuid,
                 "unit" => item.unit,
                 "counted_quantity" => stock_entry.quantity,
-                "unit_value" => unit_value
+                "unit_value" => unit_value,
+                "counted_by" => "stock",
+                "seeded_quantity" => stock_entry.quantity
               }
             ]
         end
@@ -85,11 +93,11 @@ defmodule PhoenixKitWarehouse.Inventories do
     end
   end
 
-  # `Andi.Catalogues.localized_name/2` is not a thin `PhoenixKitCatalogue.Catalogue`
-  # wrapper — it combines `Catalogue.get_translation/2` with an Andi-specific
-  # locale-code remap (`Andi.Locales.entity_locale/1`) this generic package has
+  # The host application's original `localized_name/2` is not a thin `PhoenixKitCatalogue.Catalogue`
+  # wrapper — it combines `Catalogue.get_translation/2` with a host-specific
+  # locale-code remap this generic package has
   # no access to. This private helper ports the actual translation-pick logic
-  # (the part that IS generic) and drops only the Andi-specific remap step —
+  # (the part that IS generic) and drops only the host-specific remap step —
   # callers already pass an explicit locale string (see the moduledoc above:
   # "do NOT rely on the process Gettext locale"), so the raw string is used
   # as-is against `Catalogue.get_translation/2` instead of being remapped
@@ -150,7 +158,7 @@ defmodule PhoenixKitWarehouse.Inventories do
 
   @doc """
   Updates a draft document. Returns `{:error, :not_draft}` if the document
-  is not in `draft` status.
+  is not in `draft` status, `{:error, :deleted}` when it is in the trash.
 
   Changing `:location_uuid` to a value different from the document's current
   one always re-seeds `:lines` from that warehouse's current stock (see
@@ -165,13 +173,26 @@ defmodule PhoenixKitWarehouse.Inventories do
   Locks the row FOR UPDATE and re-checks status == "draft" in the DB (not
   just the in-memory struct) so a stale tab cannot overwrite a document that
   was posted concurrently by another tab/user.
+
+  Options:
+
+    * `:base_fingerprint` - the `fingerprint/1` of the warehouse and lines
+      the caller's edit started from. Under the row lock it is compared with
+      the warehouse and lines in the database; when they differ nothing
+      is written and the answer is `{:error, :stale}`. On success the
+      returned document carries the fingerprint of what was written in
+      `:fingerprint`, the base of the caller's next save. A base passed as
+      `nil` (a tab that has none) is refused as `:stale` too. Without the
+      option nothing is compared and `:fingerprint` stays `nil`.
   """
-  def update_draft(%InventoryDocument{uuid: uuid}, attrs) do
+  def update_draft(%InventoryDocument{uuid: uuid}, attrs, opts \\ []) do
     new_location_uuid = Map.get(attrs, :location_uuid) || Map.get(attrs, "location_uuid")
+    base = Keyword.fetch(opts, :base_fingerprint)
 
     multi =
       uuid
       |> lock_status_step("draft", :not_draft)
+      |> check_fingerprint_step(base)
       |> Ecto.Multi.update(:update, fn %{lock_status: locked} ->
         changeset = InventoryDocument.draft_changeset(locked, attrs)
 
@@ -183,9 +204,72 @@ defmodule PhoenixKitWarehouse.Inventories do
         end
       end)
 
+    multi =
+      if base == :error,
+        do: multi,
+        else:
+          Ecto.Multi.run(multi, :fingerprint, fn repo, _ -> {:ok, fingerprint(uuid, repo)} end)
+
     case repo().transaction(multi) do
-      {:ok, %{update: updated}} -> {:ok, updated}
-      {:error, _op, reason, _changes} -> {:error, reason}
+      {:ok, %{update: updated} = changes} ->
+        {:ok, %{updated | fingerprint: changes[:fingerprint]}}
+
+      {:error, _op, reason, _changes} ->
+        {:error, reason}
+    end
+  end
+
+  # `:error` - the option was not passed. A passed `nil` never matches: the
+  # fingerprint of a live document is never `nil`.
+  defp check_fingerprint_step(multi, :error), do: multi
+
+  defp check_fingerprint_step(multi, {:ok, base_fingerprint}) do
+    Ecto.Multi.run(multi, :check_fingerprint, fn repo, %{lock_status: locked} ->
+      if is_binary(base_fingerprint) and fingerprint(locked.uuid, repo) == base_fingerprint,
+        do: {:ok, :same},
+        else: {:error, :stale}
+    end)
+  end
+
+  @doc """
+  The fingerprint of a document's warehouse and lines, taken in the
+  database (jsonb text is canonical; the socket's maps - Decimals, other key
+  order - are never fingerprinted). `nil` when the document is not there.
+  The warehouse is included because two warehouses can have identical seed
+  lines: counts from a tab on the old warehouse must not reach the new one.
+  Read under a row lock it says whether the warehouse and lines are still
+  the ones a tab started from (see `update_draft/3`).
+  """
+  @spec fingerprint(InventoryDocument.t() | Ecto.UUID.t(), Ecto.Repo.t() | nil) ::
+          String.t() | nil
+  def fingerprint(doc_or_uuid, target_repo \\ nil)
+
+  def fingerprint(%InventoryDocument{uuid: uuid}, target_repo), do: fingerprint(uuid, target_repo)
+
+  def fingerprint(uuid, target_repo) when is_binary(uuid) do
+    from(d in InventoryDocument,
+      where: d.uuid == ^uuid,
+      select: fragment("md5(jsonb_build_array(?, ?)::text)", d.location_uuid, d.lines)
+    )
+    |> (target_repo || repo()).one()
+  end
+
+  @doc """
+  The document and the fingerprint of its warehouse and lines, read in one query:
+  `{:ok, doc}` with `doc.fingerprint` set, or `{:error, :not_found}`. A tab
+  takes its base together with the lines it edits.
+  """
+  @spec get_document_with_fingerprint(Ecto.UUID.t()) ::
+          {:ok, InventoryDocument.t()} | {:error, :not_found}
+  def get_document_with_fingerprint(uuid) do
+    from(d in InventoryDocument,
+      where: d.uuid == ^uuid,
+      select: {d, fragment("md5(jsonb_build_array(?, ?)::text)", d.location_uuid, d.lines)}
+    )
+    |> repo().one()
+    |> case do
+      nil -> {:error, :not_found}
+      {doc, fingerprint} -> {:ok, %{doc | fingerprint: fingerprint}}
     end
   end
 
@@ -203,29 +287,63 @@ defmodule PhoenixKitWarehouse.Inventories do
   @doc """
   Lists non-deleted inventory documents. Ordered by number descending
   (newest first).
+
+  `opts`:
+    * `:trashed` (default `false`) - `true` lists the trashed documents
+      instead (any status, same order), the content of the trash view.
   """
-  def list_documents(_opts) do
+  def list_documents(opts) do
     InventoryDocument
-    |> where([d], is_nil(d.deleted_at))
+    |> DraftTrash.scope(Keyword.get(opts, :trashed, false))
     |> order_by([d], desc: d.number)
     |> repo().all()
   end
+
+  @doc "Counts the trashed inventory documents (any status)."
+  @spec count_trashed_documents() :: non_neg_integer()
+  def count_trashed_documents, do: DraftTrash.count_trashed(InventoryDocument)
 
   # ---------------------------------------------------------------------------
   # Soft delete
   # ---------------------------------------------------------------------------
 
-  @doc "Soft-deletes a draft document. Returns {:error, :not_draft} for posted documents."
-  def soft_delete_document(%InventoryDocument{status: "draft"} = doc, actor_uuid) do
-    doc
-    |> InventoryDocument.soft_delete_changeset(%{
-      deleted_at: DateTime.utc_now() |> DateTime.truncate(:second),
-      deleted_by_uuid: actor_uuid
-    })
-    |> repo().update()
+  @doc """
+  Soft-deletes a draft document (sends it to the trash).
+
+  Locks the row and moves it only while it is still a live draft in the
+  database, so a draft posted in another tab is not trashed from a stale
+  struct. Returns `{:ok, doc}`, `{:error, :not_draft}` for posted documents,
+  `{:error, :deleted}` when it is already in the trash and
+  `{:error, :not_found}` for a row that no longer exists. Logged as
+  `warehouse.inventory.trashed` after the commit.
+  """
+  @spec soft_delete_document(InventoryDocument.t(), Ecto.UUID.t() | nil) ::
+          {:ok, InventoryDocument.t()} | {:error, :not_draft | :deleted | :not_found}
+  def soft_delete_document(%InventoryDocument{status: "draft", uuid: uuid}, actor_uuid) do
+    with {:ok, trashed} <- DraftTrash.trash_one(InventoryDocument, uuid, actor_uuid) do
+      ActivityLog.log_inventory_trashed(trashed, actor_uuid: actor_uuid, reason: "manual")
+      {:ok, trashed}
+    end
   end
 
   def soft_delete_document(%InventoryDocument{}, _actor_uuid), do: {:error, :not_draft}
+
+  @doc """
+  Brings a trashed draft document back.
+
+  Returns `{:ok, doc}`, `{:error, :not_deleted}` for a live one,
+  `{:error, :not_draft}` for a trashed posted document (legacy; it stays in the
+  trash) or `{:error, :not_found}`. Logged as `warehouse.inventory.restored`
+  after the commit.
+  """
+  @spec restore_document(InventoryDocument.t(), Ecto.UUID.t() | nil) ::
+          {:ok, InventoryDocument.t()} | {:error, :not_deleted | :not_draft | :not_found}
+  def restore_document(%InventoryDocument{uuid: uuid}, actor_uuid) do
+    with {:ok, restored} <- DraftTrash.restore_one(InventoryDocument, uuid) do
+      ActivityLog.log_inventory_restored(restored, actor_uuid: actor_uuid)
+      {:ok, restored}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Posting
@@ -245,18 +363,30 @@ defmodule PhoenixKitWarehouse.Inventories do
     stock as audit fields; upserts the stock row inside the same transaction.
   - Updates the document status to "posted" with `posted_at` and
     `performed_by_uuid`.
-  - Returns `{:error, :not_draft}` if the document is not in draft status.
+  - Returns `{:error, :not_draft}` if the document is not in draft status,
+    `{:error, :deleted}` when it is in the trash.
   - Posts the lines and `track_value` of the row read under the status lock,
     not those of the struct passed in, so a stale struct cannot overwrite a
     concurrent edit of the draft.
   - Rolls back on any failure.
+
+  Options:
+
+    * `:base_fingerprint` - the `fingerprint/1` of the warehouse and lines
+      the caller means to post (the save it just made). Under the row lock
+      it is compared with the warehouse and lines in the database; when they
+      differ nothing is posted and the answer is `{:error, :stale}`. A base
+      passed as `nil` is refused as `:stale` too. Without the option nothing
+      is compared.
   """
-  def post_document(%InventoryDocument{status: status}, _performed_by_uuid)
+  def post_document(doc, performed_by_uuid, opts \\ [])
+
+  def post_document(%InventoryDocument{status: status}, _performed_by_uuid, _opts)
       when status != "draft" do
     {:error, :not_draft}
   end
 
-  def post_document(%InventoryDocument{} = doc, performed_by_uuid) do
+  def post_document(%InventoryDocument{} = doc, performed_by_uuid, opts) do
     # `lock_status_step` locks the row FOR UPDATE and re-checks status == "draft"
     # inside the transaction, turning draft→posted into an atomic compare-and-swap.
     # The in-memory guard above only sees the struct in hand; a concurrent or
@@ -265,6 +395,7 @@ defmodule PhoenixKitWarehouse.Inventories do
     multi =
       doc.uuid
       |> lock_status_step("draft", :not_draft)
+      |> check_fingerprint_step(Keyword.fetch(opts, :base_fingerprint))
       |> Ecto.Multi.run(:document, fn repo, %{lock_status: locked} ->
         apply_counts_and_post(locked, performed_by_uuid, repo)
       end)
@@ -393,24 +524,13 @@ defmodule PhoenixKitWarehouse.Inventories do
   end
 
   # First step of a posting transaction: lock the document row FOR UPDATE and
-  # assert it is still in `expected_status`. Returns `{:error, error}` (aborting
-  # the transaction) when the row no longer matches — i.e. a concurrent
-  # transaction already moved it, or it was posted/deleted out from under a stale
-  # in-memory struct.
-  defp lock_status_step(uuid, expected_status, error) do
-    Ecto.Multi.run(Ecto.Multi.new(), :lock_status, fn repo, _changes ->
-      query =
-        from(d in InventoryDocument,
-          where: d.uuid == ^uuid and d.status == ^expected_status,
-          lock: "FOR UPDATE"
-        )
-
-      case repo.one(query) do
-        nil -> {:error, error}
-        %InventoryDocument{} = locked -> {:ok, locked}
-      end
-    end)
-  end
+  # assert it is still in `expected_status` (a draft also out of the trash).
+  # Returns `{:error, error}` (aborting the transaction) when the row no longer
+  # matches — i.e. a concurrent transaction already moved it, or it was posted
+  # out from under a stale in-memory struct — and `{:error, :deleted}` for a
+  # draft in the trash.
+  defp lock_status_step(uuid, expected_status, error),
+    do: DraftTrash.lock_status_step(InventoryDocument, uuid, expected_status, error)
 
   # The shared body of post_document/2, repost_document/2 and create_and_post/2.
   # Runs INSIDE the posting transaction: the prior stock is read under a row

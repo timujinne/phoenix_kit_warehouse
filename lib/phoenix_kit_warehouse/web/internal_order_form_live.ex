@@ -36,17 +36,28 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   alias PhoenixKitWarehouse.StockLedger
   alias PhoenixKitWarehouse.StorageFolders
   alias PhoenixKitWarehouse.SupplierOrders
-  alias PhoenixKitWarehouse.Web.Components.{CommentsPanel, RelatedDocuments, WarehouseBrowser}
+
+  alias PhoenixKitWarehouse.Web.Components.{
+    CommentsPanel,
+    RelatedDocuments,
+    SupplierOrderPreview,
+    TrashAction,
+    WarehouseBrowser
+  }
+
   alias PhoenixKitWarehouse.Web.Components.LineExplanations
+
   alias PhoenixKitWarehouse.Web.ItemSelectorScope
+  alias PhoenixKitWarehouse.Web.SupplierOrderPreview, as: Preview
+  alias PhoenixKitWarehouse.Web.TrashActions
   alias PhoenixKitWarehouse.Web.TrashMessages
-  alias PhoenixKitWarehouse.Web.UserNames
 
   # Events that change the document, its links or what is made from it. A
   # document in the trash answers none of them; the buttons are hidden, this
   # is for a stale event.
   @trash_blocked ~w(remove_line set_required_qty save_draft conduct save_correction
-                    generate_supplier_orders issue_to_production open_item_selector
+                    generate_supplier_orders preview_change preview_assign_selected
+                    preview_confirm issue_to_production open_item_selector
                     open_source_picker open_link_picker source_picker_confirm
                     remove_source_ref)
 
@@ -94,7 +105,8 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       |> assign(:source_picker_query, "")
       |> assign(:source_refs, [])
       |> assign(:deleted_by_name, nil)
-      |> assign(:replaceable_drafts, [])
+      |> assign(:trash_candidate, nil)
+      |> assign(:preview, nil)
       |> MediaBrowser.setup_uploads()
 
     {:ok, socket}
@@ -190,8 +202,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       |> assign(:child_supplier_order_refs, child_supplier_order_refs)
       |> assign(:child_goods_issue_refs, child_goods_issue_refs)
       |> assign(:source_refs, source_refs)
-      |> assign(:deleted_by_name, deleted_by_name(order))
-      |> assign(:replaceable_drafts, replaceable_drafts(order))
+      |> assign(:deleted_by_name, TrashActions.deleted_by_name(order))
       |> assign(
         :page_title,
         dgettext("default", "Internal Order #%{number}", number: order.number)
@@ -199,22 +210,6 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
     if same_order?, do: socket, else: assign_edit_buffer(socket, order, locale)
   end
-
-  defp deleted_by_name(%{deleted_at: nil}), do: nil
-
-  defp deleted_by_name(order) do
-    UserNames.label(UserNames.resolve([order], [:deleted_by_uuid]), order.deleted_by_uuid)
-  end
-
-  # The live supplier-order drafts a generation may send to the trash; only
-  # looked up where the confirmation can use them.
-  defp replaceable_drafts(%{status: "posted", deleted_at: nil, uuid: uuid}) do
-    if PhoenixKitWarehouse.one_draft_per_source?(),
-      do: SupplierOrders.list_replaceable_drafts(uuid),
-      else: []
-  end
-
-  defp replaceable_drafts(_order), do: []
 
   # Reads the document again, buffer included: what the person had typed is
   # not what the stored (possibly trashed) document holds.
@@ -258,20 +253,35 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
         _params,
         %{assigns: %{order: %{deleted_at: %DateTime{}}}} = socket
       )
-      when event in @trash_blocked do
-    # The socket may be a tab behind: the document could have been restored
-    # meanwhile. Read it again; a live one is drawn as such and the event, which
-    # was meant for the form as it was, is not carried out.
-    socket = reload_order(socket)
+      when event in @trash_blocked,
+      do:
+        {:noreply,
+         socket
+         |> assign(:preview, nil)
+         |> TrashActions.refuse_trashed(:order, &reload_order/1, &resume_files_tab/1)}
 
-    case socket.assigns.order do
-      %{deleted_at: %DateTime{}} ->
-        {:noreply, put_flash(socket, :error, TrashMessages.moved_to_trash())}
-
-      _live ->
-        {:noreply, resume_files_tab(socket)}
-    end
+  # "Move to trash" of the form's own document (TrashActions); the uuid is the
+  # form's, not the browser's. After the move the form is drawn as trashed.
+  @impl true
+  def handle_event("request_trash", _params, %{assigns: %{order: nil}} = socket) do
+    {:noreply, put_flash(socket, :error, TrashMessages.restore_error(:not_found))}
   end
+
+  def handle_event("request_trash", _params, socket) do
+    {:noreply,
+     TrashActions.request_trash(
+       socket,
+       :internal_order,
+       socket.assigns.order.uuid,
+       &reload_order/1
+     )}
+  end
+
+  def handle_event("confirm_trash", _params, socket),
+    do: {:noreply, TrashActions.confirm_trash(socket, :internal_order, &reload_order/1)}
+
+  def handle_event("cancel_trash", _params, socket),
+    do: {:noreply, TrashActions.cancel_trash(socket)}
 
   @impl true
   def handle_event("restore", _params, %{assigns: %{order: nil}} = socket) do
@@ -666,68 +676,88 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
   end
 
   # ---------------------------------------------------------------------------
-  # Generate supplier orders (posted only)
+  # Generate supplier orders (posted only): the preview window
   # ---------------------------------------------------------------------------
 
+  # Opens the window on a fresh plan; nothing is written until "Generate".
   @impl true
   def handle_event("generate_supplier_orders", _params, socket) do
-    order = socket.assigns.order
-
-    case order do
-      %PhoenixKitWarehouse.InternalOrder{status: "posted"} ->
-        current_user = socket.assigns.current_user
-        user_uuid = current_user && current_user.uuid
-
-        opts = [supersede_drafts: PhoenixKitWarehouse.one_draft_per_source?()]
-
-        case SupplierOrders.generate_from_internal_order(order, user_uuid, opts) do
-          {:ok, %{supplier_orders: created, unassigned_lines: unassigned} = result} ->
-            n = length(created)
-            m = length(unassigned)
-
-            msg =
-              cond do
-                n > 0 and m > 0 ->
-                  dgettext(
-                    "default",
-                    "Generated %{n} supplier order(s). %{m} line(s) could not be assigned to a supplier.",
-                    n: n,
-                    m: m
-                  )
-
-                n > 0 ->
-                  dgettext("default", "Generated %{n} supplier order(s).", n: n)
-
-                m > 0 ->
-                  dgettext(
-                    "default",
-                    "No supplier orders created. %{m} line(s) could not be assigned (0 or multiple suppliers).",
-                    m: m
-                  )
-
-                true ->
-                  dgettext("default", "No lines required restocking.")
-              end
-
-            socket =
-              socket
-              |> put_flash(:info, TrashMessages.append_moved(msg, result.superseded))
-              |> push_navigate(to: Routes.path("/admin/warehouse/supplier-orders"))
-
-            {:noreply, socket}
-
-          {:error, _reason} ->
-            {:noreply,
-             put_flash(socket, :error, dgettext("default", "Failed to generate supplier orders"))}
+    case socket.assigns.order do
+      %PhoenixKitWarehouse.InternalOrder{status: "posted", uuid: uuid} ->
+        case SupplierOrders.plan_from_internal_order(uuid) do
+          {:ok, plan} -> {:noreply, assign(socket, :preview, Preview.new(plan))}
+          {:error, reason} -> {:noreply, generation_failed(socket, reason)}
         end
 
       _ ->
+        {:noreply, generation_failed(socket, :not_posted)}
+    end
+  end
+
+  # An event of a window that is no longer open (a stale one) does nothing.
+  def handle_event(event, _params, %{assigns: %{preview: nil}} = socket)
+      when event in ~w(preview_change preview_assign_selected preview_confirm),
+      do: {:noreply, socket}
+
+  def handle_event("preview_change", params, socket) do
+    {:noreply, update(socket, :preview, &Preview.change(&1, params))}
+  end
+
+  def handle_event("preview_assign_selected", _params, socket) do
+    {:noreply, update(socket, :preview, &Preview.assign_checked/1)}
+  end
+
+  def handle_event("cancel_generation_preview", _params, socket) do
+    {:noreply, assign(socket, :preview, nil)}
+  end
+
+  # The button is disabled then; an event sent anyway writes nothing.
+  def handle_event(
+        "preview_confirm",
+        _params,
+        %{assigns: %{preview: %{assembled: %{orders: []}}}} = socket
+      ) do
+    {:noreply,
+     put_flash(
+       socket,
+       :error,
+       dgettext("default", "Nothing to generate: no line is ordered from a supplier")
+     )}
+  end
+
+  # Writes exactly the plan the window shows, with its choices; a plan that
+  # went stale meanwhile is shown again, the valid choices kept.
+  def handle_event("preview_confirm", _params, socket) do
+    preview = socket.assigns.preview
+    user_uuid = socket.assigns.current_user && socket.assigns.current_user.uuid
+
+    case SupplierOrders.apply_plan(
+           socket.assigns.order.uuid,
+           preview.plan.fingerprint,
+           preview.choices,
+           user_uuid
+         ) do
+      {:ok, result} ->
         {:noreply,
-         put_flash(
-           socket,
+         socket
+         |> assign(:preview, nil)
+         |> put_flash(:info, generated_message(result))
+         |> push_navigate(to: Routes.path("/admin/warehouse/supplier-orders"))}
+
+      {:error, {:stale, plan}} ->
+        {:noreply, assign(socket, :preview, Preview.restale(preview, plan))}
+
+      {:error, {:invalid_choice, key}} ->
+        {:noreply,
+         socket
+         |> assign(:preview, Preview.drop_choice(preview, key))
+         |> put_flash(
            :error,
-           dgettext("default", "Only posted internal orders can generate supplier orders")
+           dgettext("default", "A chosen supplier cannot be used for a line — choose again")
          )}
+
+      {:error, reason} ->
+        {:noreply, generation_failed(socket, reason)}
     end
   end
 
@@ -872,6 +902,11 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
     >
     <div class="flex flex-col mx-auto max-w-none sm:px-4 py-2 sm:py-6 gap-4">
       <div class="flex flex-wrap items-center justify-end gap-2">
+        <TrashAction.trash_button
+          :if={@order && !@deleted?}
+          id_prefix="io"
+          reason={TrashActions.blocked_reason(@order)}
+        />
         <%!-- Draft state: Save draft + Conduct --%>
         <%= if !@read_only? and @active_tab in [:general, :items] do %>
           <button
@@ -909,7 +944,6 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
             type="button"
             id="io-generate-supplier-orders"
             phx-click="generate_supplier_orders"
-            data-confirm={confirm_generation(@replaceable_drafts)}
             class="btn btn-secondary btn-sm"
           >
             <.icon name="hero-truck" class="w-4 h-4" /> {dgettext(
@@ -968,20 +1002,12 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
       </div>
 
       <%!-- Trashed document: say so, offer the way back (drafts only) --%>
-      <div :if={@deleted?} id="io-trash-banner" class="alert alert-warning">
-        <.icon name="hero-trash" class="w-5 h-5" />
-        <span>{TrashMessages.banner(@order.deleted_at, @deleted_by_name)}</span>
-        <button
-          :if={@order.status == "draft"}
-          type="button"
-          id="io-restore"
-          phx-click="restore"
-          phx-disable-with={dgettext("default", "Restoring...")}
-          class="btn btn-sm btn-primary"
-        >
-          <.icon name="hero-arrow-uturn-left" class="w-4 h-4" /> {dgettext("default", "Restore")}
-        </button>
-      </div>
+      <TrashAction.trash_banner
+        :if={@deleted?}
+        id_prefix="io"
+        document={@order}
+        deleted_by={@deleted_by_name}
+      />
 
       <%!-- Posted info banner (non-admin only) --%>
       <%= if @posted? and not @admin? do %>
@@ -1233,21 +1259,52 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
         selected_uuids={@source_picker_selected}
         search_query={@source_picker_query}
       />
+
+      <SupplierOrderPreview.preview_modal preview={@preview} />
+
+      <TrashAction.trash_confirm id_prefix="io" candidate={@trash_candidate} form />
     </div>
     </PhoenixKitWeb.Components.LayoutWrapper.app_layout>
     """
   end
 
-  # The generation may send live supplier-order drafts of the same suppliers
-  # to the trash (only with `:one_draft_per_source`); name them first.
-  defp confirm_generation([]), do: nil
+  # The flash after a write: the drafts made and the drafts appended to, then
+  # the lines with something to order that got no supplier.
+  defp generated_message(%{supplier_orders: created, appended: appended} = result) do
+    [
+      created != [] &&
+        dgettext("default", "Supplier orders created: %{n}.", n: length(created)),
+      appended != [] &&
+        dgettext("default", "Appended to: %{numbers}.",
+          numbers: Enum.map_join(appended, ", ", &TrashMessages.tag/1)
+        ),
+      result.unassigned_lines != [] &&
+        dgettext("default", "Lines not ordered: %{n}.", n: length(result.unassigned_lines))
+    ]
+    |> Enum.filter(& &1)
+    |> case do
+      [] -> dgettext("default", "No lines required restocking.")
+      parts -> Enum.join(parts, " ")
+    end
+  end
 
-  defp confirm_generation(drafts) do
-    dgettext(
-      "default",
-      "Draft supplier orders %{numbers} for the same suppliers may be moved to the trash. Continue?",
-      numbers: Enum.map_join(drafts, ", ", &TrashMessages.tag/1)
+  # The internal order went to the trash meanwhile: say so and draw it as
+  # trashed. One no longer posted closes the window with a message; any other
+  # error leaves it open, the choices kept, with a message.
+  defp generation_failed(socket, :deleted),
+    do: socket |> assign(:preview, nil) |> trashed_meanwhile()
+
+  defp generation_failed(socket, :not_posted) do
+    socket
+    |> assign(:preview, nil)
+    |> put_flash(
+      :error,
+      dgettext("default", "Only posted internal orders can generate supplier orders")
     )
+  end
+
+  defp generation_failed(socket, _reason) do
+    put_flash(socket, :error, dgettext("default", "Failed to generate supplier orders"))
   end
 
   defp picker_title(:import), do: dgettext("default", "Import from order")
@@ -1347,10 +1404,8 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
   # The Files tab skipped the folder lookup while the document was in the
   # trash; a restore makes up for it, so the tab does not stay empty.
-  defp resume_files_tab(%{assigns: %{active_tab: :files}} = socket),
-    do: maybe_start_files_folder_resolution(socket)
-
-  defp resume_files_tab(socket), do: socket
+  defp resume_files_tab(socket),
+    do: TrashActions.resume_files_tab(socket, &maybe_start_files_folder_resolution/1)
 
   defp maybe_start_files_folder_resolution(socket) do
     cond do
@@ -1461,11 +1516,7 @@ defmodule PhoenixKitWarehouse.Web.InternalOrderFormLive do
 
   # The save found the document in the trash (someone replaced it meanwhile):
   # say so and draw the stored document, not the unsaved buffer.
-  defp trashed_meanwhile(socket) do
-    socket
-    |> put_flash(:error, TrashMessages.moved_to_trash())
-    |> reload_order()
-  end
+  defp trashed_meanwhile(socket), do: TrashActions.trashed_meanwhile(socket, &reload_order/1)
 
   defp ensure_saved(%PhoenixKitWarehouse.InternalOrder{status: "draft"} = order, attrs) do
     InternalOrders.update_draft(order, attrs)
