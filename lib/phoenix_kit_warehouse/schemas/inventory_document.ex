@@ -39,6 +39,10 @@ defmodule PhoenixKitWarehouse.InventoryDocument do
     field(:posted_at, :utc_datetime)
     field(:deleted_at, :utc_datetime)
     field(:deleted_by_uuid, Ecto.UUID)
+    # The hash of the warehouse and lines as computed in the database when
+    # read or written by `Inventories.get_document_with_fingerprint/1` or
+    # `Inventories.update_draft/3` with `base_fingerprint:`; `nil` otherwise.
+    field(:fingerprint, :string, virtual: true)
 
     timestamps(type: :utc_datetime)
   end
