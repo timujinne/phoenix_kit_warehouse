@@ -1,7 +1,7 @@
 defmodule PhoenixKitWarehouse.MixProject do
   use Mix.Project
 
-  @version "0.6.0"
+  @version "0.7.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_warehouse"
 
   def project do
@@ -111,7 +111,9 @@ defmodule PhoenixKitWarehouse.MixProject do
       # with `PhoenixKit.Modules.Storage.ImageProcessor.preview_jpeg/3`,
       # first shipped in 2.57.0. An older core has no such function, so
       # every photo would be skipped and every run would fail.
-      pk_dep(:phoenix_kit, "~> 2.57"),
+      # Floor 2.65.0: the first core with the `file_references/0` and `expected_schema/0`
+      # callbacks this module implements (`@impl`). The ceiling is open through core 3.x.
+      pk_dep(:phoenix_kit, ">= 2.65.0 and < 4.0.0"),
       # mdex_native (pulled in transitively through phoenix_kit's mdex dep)
       # builds from source when MDEX_NATIVE_BUILD=1 is set in the
       # environment; that path requires rustler itself, not just
@@ -119,14 +121,14 @@ defmodule PhoenixKitWarehouse.MixProject do
       {:rustler, ">= 0.0.0", optional: true},
       # Sibling PhoenixKit modules the warehouse UI/contexts build on:
       # comments embeds, catalogue products, locations, and billing currency.
-      pk_dep(:phoenix_kit_billing, "~> 0.7"),
+      pk_dep(:phoenix_kit_billing, "~> 0.24"),
       # Photo inventory (`PhoenixKitWarehouse.InventoryAI`): `describe_image/3`
       # and the AI prompts, written against 0.25.5 (`describe_image/3` with a
       # strict `schema:`). The catalogue already requires `~> 0.24`, so this
       # adds no new package. A direct dep, NOT in `required_modules/0`:
       # without the ai module switched on the inventory button is simply not
       # shown.
-      pk_dep(:phoenix_kit_ai, "~> 0.25"),
+      pk_dep(:phoenix_kit_ai, "~> 0.27"),
       # 0.18.0 was the floor before: `ItemSelectorModal` (the three "Add item" flows)
       # first shipped there. `~> 0.13` would still resolve 0.13–0.17, which
       # compile-fail on `PhoenixKitCatalogue.Web.Components.ItemSelectorModal`.
@@ -135,15 +137,15 @@ defmodule PhoenixKitWarehouse.MixProject do
       # kilogram, litre and cubic metre units (#140), both first shipped in
       # 0.46.0. An older catalogue ignores `item_types`, so services would
       # reach the list the model chooses from.
-      pk_dep(:phoenix_kit_catalogue, "~> 0.46"),
+      pk_dep(:phoenix_kit_catalogue, "~> 0.50"),
       # 0.2.8 is the floor for the same reason `phoenix_kit` has one: six form
       # LiveViews `use PhoenixKitComments.Embed` (first shipped in 0.2.6, and a
       # `use` cannot be guarded), and `PhoenixKitWarehouse.Comments` calls
       # `subscribe/2`, `unsubscribe/2` and the list form of `count_comments/2`
       # — all three arrived in 0.2.8. `available?/0` only guards the module
       # being absent entirely, not an older one missing those functions.
-      pk_dep(:phoenix_kit_comments, "~> 0.3"),
-      pk_dep(:phoenix_kit_locations, "~> 0.4"),
+      pk_dep(:phoenix_kit_comments, "~> 0.5"),
+      pk_dep(:phoenix_kit_locations, "~> 0.8"),
       {:phoenix_live_view, "~> 1.1"},
       {:ex_doc, "~> 0.39", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
